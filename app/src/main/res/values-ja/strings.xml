@@ -7,7 +7,7 @@
     <string name="receive">📥 受信</string>
     <string name="send_via_qr">QRで送信</string>
     <string name="share_web">PC用Web送信機 (HTML) を共有…</string>
-    <string name="about">しくみ\n• 送信側はデータをチャンクに分け、QRコードを連続表示します。各コードには転送ID・番号・総数・全体のCRC-32が入ります (形式 QT1:ID:番号:総数:CRC32:データ)。\n• データは Base45 で符号化し、QRの英数字モードを使います (base64より1コードあたり約3割多く運べます)。効果がある場合は DEFLATE で圧縮します。\n• 受信側は順不同で読み取り、欠けているチャンクを表示し、揃ったら CRC-32 を検証します。\n• 確認音: 受信側は新しいチャンクごとに 1900 Hz、完了時に 2850 Hz を鳴らします。「受信側の音で進める」をオンにすると送信側がマイクで聞き取り、音が聞こえたらすぐ次へ進み、確認済みのチャンクを飛ばし、完了音で停止します。オフのときは全チャンクを繰り返し表示します。\n• PC → スマホ: web/sender.html (オフラインの単一ファイル) をPCのブラウザで開きます。\n\nインターネット・Bluetooth・Wi-Fi・NFC は一切使いません。受信側は画面から20〜40 cmほど離して構えてください。読み取りが遅いときは速度やチャンクサイズを下げてください。\n\nライセンス: ZXing core (Apache-2.0)、qrcode-generator (Kazuhiko Arase, MIT, Web送信機)。本アプリ: MIT © 2026 zmlworks。AIアシスタント Grok Bot が作成。</string>
+    <string name="about">しくみ\n• 送信側はデータをチャンクに分け、QRコードを 2枚同時に (上: 偶数番、下: 奇数番) 表示します。各コードには転送ID・番号・総数・全体のCRC-32が入ります (形式 QT1:ID:番号:総数:CRC32:データ)。\n• データは Base45 で符号化し、QRの英数字モードを使います (base64より1コードあたり約3割多く運べます)。効果がある場合は DEFLATE で圧縮します。\n• 受信側は 1つのカメラ画像から 2枚とも読み取り、順不同で集め、欠けているチャンクを表示し、揃ったら CRC-32 を検証します。\n• 確認音: 1500 Hz = 上のコードを読んだ、2200 Hz = 下のコードを読んだ、2700 Hz (長め) = 完了。「確認音で進める」をオンにすると送信側がマイクで聞き取り、上下それぞれを独立にすぐ次へ進めます (1枚表示の約2倍の速さ)。確認できなかったコードは自動調整されるタイムアウト後に再送します。オフのときは単純にループします。\n• PC → スマホ: web/sender.html (オフラインの単一ファイル) をPCのブラウザで開きます。PCのマイクで確認音を聞くこともできます。\n\nインターネット・Bluetooth・Wi-Fi・NFC は一切使いません。受信側は 2枚とも画面に入るよう 20〜40 cm ほど離して構えてください。読み取りが遅いときは速度やチャンクサイズを下げてください。\n\nライセンス: ZXing core (Apache-2.0)、qrcode-generator (Kazuhiko Arase, MIT, Web送信機)。本アプリ: MIT © 2026 zmlworks。AIアシスタント Grok Bot が作成。</string>
     <string name="send_title">テキストまたはファイルを送信</string>
     <string name="text_hint">送るテキスト…</string>
     <string name="pick_file">ファイルを選ぶ…</string>
@@ -23,7 +23,7 @@
     <string name="ecc_level">QR 誤り訂正レベル</string>
     <string-array name="ecc"><item>L (7%) — 最大容量</item><item>M (15%)</item><item>Q (25%) — 最も頑丈</item></string-array>
     <string name="ack_mode">受信側の確認音で進める (マイク)</string>
-    <string name="ack_help">任意機能。送信側が受信側のビープ音を聞き取り、早めに次へ進み、確認済みチャンクを飛ばします。オフのときは全チャンクを連続ループします。</string>
+    <string name="ack_help">任意 (おすすめ)。受信側は上のコード (偶数番) を読むと 1500 Hz、下のコード (奇数番) を読むと 2200 Hz を鳴らします。送信側はそれを聞き取り、上下それぞれを独立にすぐ次へ進め、確認できなかった分は後で再送し、2700 Hz の完了音で停止します。オフのときは単純にループします。</string>
     <string name="start_send">▶ 送信開始</string>
     <string name="preparing">準備中…</string>
     <string name="qr_desc">QRコードのフレーム</string>
@@ -37,10 +37,10 @@
     <string name="camera_denied">受信にはカメラの権限が必要です。</string>
     <string name="no_camera">カメラが見つかりません。</string>
     <string name="camera_failed">カメラの設定に失敗しました。</string>
-    <string name="waiting_qr">送信側のQRコードにカメラを向けてください…</string>
+    <string name="waiting_qr">送信側のQRコードにカメラを向けてください (2枚とも画面に入れる)…</string>
     <string name="progress">%1$d / %2$d チャンク (%3$d%%)  ID %4$s</string>
     <string name="missing">欠落: %1$s</string>
-    <string name="beep">新しいチャンクごとにビープ (確認音)</string>
+    <string name="beep">確認音を鳴らす (聞き取る送信側が次へ進みます)</string>
     <string name="new_transfer">新しい転送を検出 — 最初からやり直します。</string>
     <string name="verify_failed">検証に失敗しました (%1$s)。もう一度受信します。</string>
     <string name="result_ok">✓ 受信完了 — CRC-32 %1$s 一致\n%2$s · %3$,d バイト</string>
@@ -52,4 +52,5 @@
     <string name="again">次を受信</string>
     <string name="copied">コピーしました。</string>
     <string name="saved">保存しました。</string>
+    <string name="two_codes">2枚同時に表示 (受信側 0.2.0 以降、約2倍速)</string>
 </resources>

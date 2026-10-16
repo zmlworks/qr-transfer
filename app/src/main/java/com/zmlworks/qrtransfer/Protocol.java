@@ -154,7 +154,7 @@ public final class Protocol {
         private String id, crc;
         private byte[][] chunks;
         private final BitSet have = new BitSet();
-        private int count, lastIndex = -1;
+        private int count, lastIndex = -1, lastSeen = -1;
 
         public Result accept(String text) {
             Frame f = parse(text);
@@ -164,6 +164,7 @@ public final class Protocol {
                 r = id == null ? Result.NEW : Result.RESTARTED;
                 id = f.id; crc = f.crc; chunks = new byte[f.total][]; have.clear(); count = 0;
             }
+            lastSeen = f.index;
             if (have.get(f.index)) return Result.DUPLICATE;
             chunks[f.index] = f.chunk;
             have.set(f.index);
@@ -178,6 +179,8 @@ public final class Protocol {
         public int total() { return chunks == null ? 0 : chunks.length; }
         public int received() { return count; }
         public int lastIndex() { return lastIndex; }
+        /** index of the last accepted frame, duplicates included */
+        public int lastSeen() { return lastSeen; }
         public boolean has(int i) { return have.get(i); }
         public boolean complete() { return chunks != null && count == chunks.length; }
 
@@ -209,6 +212,6 @@ public final class Protocol {
             return c;
         }
 
-        public void reset() { id = null; crc = null; chunks = null; have.clear(); count = 0; lastIndex = -1; }
+        public void reset() { id = null; crc = null; chunks = null; have.clear(); count = 0; lastIndex = -1; lastSeen = -1; }
     }
 }

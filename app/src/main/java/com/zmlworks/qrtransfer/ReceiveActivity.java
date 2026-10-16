@@ -23,6 +23,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
@@ -32,13 +33,6 @@ import android.widget.CheckBox;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.zxing.BinaryBitmap;
-import com.google.zxing.ChecksumException;
-import com.google.zxing.FormatException;
-import com.google.zxing.NotFoundException;
-import com.google.zxing.PlanarYUVLuminanceSource;
-import com.google.zxing.common.HybridBinarizer;
-import com.google.zxing.qrcode.QRCodeReader;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -46,6 +40,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.zip.DataFormatException;
 
@@ -68,7 +63,10 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
 
     // decoder state: camera thread only
     private final Protocol.Assembler asm = new Protocol.Assembler();
-    private final QRCodeReader qr = new QRCodeReader();
+    private final FrameDecoder decoder = new FrameDecoder();
+    private final AckPolicy policy = new AckPolicy();
+    private String completedId;
+    private long completedAt;
     private byte[] yBuf;
     private volatile boolean completed;
     private volatile boolean beepOn = true;
@@ -138,13 +136,13 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { return true; }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture st) { }
 
-    /** Prefer ~1280x720 (16:9): enough pixels per QR module, cheap to decode. */
+    /** Prefer ~1920x1080 (16:9): two codes share the frame, so each needs the pixels; still cheap to decode. */
     static Size choose(Size[] sizes) {
         Size best = null;
         double bestScore = Double.MAX_VALUE;
         for (Size s : sizes) {
             double aspect = (double) s.getWidth() / s.getHeight();
-            double score = Math.abs(aspect - 16.0 / 9) * 4 + Math.abs(Math.log((double) s.getWidth() * s.getHeight() / (1280.0 * 720)));
+            double score = Math.abs(aspect - 16.0 / 9) * 4 + Math.abs(Math.log((double) s.getWidth() * s.getHeight() / (1920.0 * 1080)));
             if (s.getWidth() * s.getHeight() <= 1920 * 1080 && score < bestScore) { best = s; bestScore = score; }
         }
         return best != null ? best : sizes[0];
@@ -222,7 +220,9 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
         try { img = r.acquireLatestImage(); } catch (IllegalStateException e) { return; }
         if (img == null) return;
         try {
-            if (completed) return;
+            long now = SystemClock.uptimeMillis();
+            // after completion keep looking for ~30 s only to repeat DONE for a sender that did not hear it
+            if (completed && now - completedAt > 30_000) return;
             int w = img.getWidth(), h = img.getHeight();
             Image.Plane p = img.getPlanes()[0];
             ByteBuffer buf = p.getBuffer();
@@ -230,23 +230,26 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
             if (yBuf == null || yBuf.length != w * h) yBuf = new byte[w * h];
             if (rs == w) buf.get(yBuf, 0, w * h);
             else for (int y = 0; y < h; y++) { buf.position(y * rs); buf.get(yBuf, y * w, w); }
-            int side = Math.min(w, h) * 9 / 10;   // the middle square: faster than the whole frame
-            PlanarYUVLuminanceSource src = new PlanarYUVLuminanceSource(yBuf, w, h, (w - side) / 2, (h - side) / 2, side, side, false);
-            String text;
-            try {
-                text = qr.decode(new BinaryBitmap(new HybridBinarizer(src))).getText();
-            } catch (NotFoundException | ChecksumException | FormatException e) {
-                return;
-            } finally { qr.reset(); }
-            onText(text);
+            List<String> texts = decoder.decode(yBuf, w, h);   // up to two codes (slot A + slot B)
+            for (String t : texts) onText(t, now);
         } finally { img.close(); }
     }
 
-    private void onText(String text) {
+    private void onText(String text, long now) {
+        if (completed) {
+            Protocol.Frame f = Protocol.parse(text);
+            if (f != null && f.id.equals(completedId) && beepOn && policy.shouldRepeatDone(now)) player.done();
+            return;
+        }
         Protocol.Assembler.Result res = asm.accept(text);
-        if (res != Protocol.Assembler.Result.NEW && res != Protocol.Assembler.Result.RESTARTED) return;
+        if (res == Protocol.Assembler.Result.IGNORED) return;
+        if (res == Protocol.Assembler.Result.RESTARTED) policy.reset();
         boolean done = asm.complete();
-        if (beepOn && !done) player.ack();
+        if (beepOn && !done) {
+            int slot = policy.onFrame(asm.lastSeen(), now);   // also for duplicates: lets the sender move on
+            if (slot >= 0) player.ack(slot);
+        }
+        if (res == Protocol.Assembler.Result.DUPLICATE) return;
         int total = asm.total(), got = asm.received(), last = asm.lastIndex();
         boolean[] have = new boolean[total];
         for (int i = 0; i < total; i++) have[i] = asm.has(i);
@@ -260,11 +263,14 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
             try {
                 final Protocol.Content c = asm.assemble();
                 final String crc = asm.crc();
+                completedId = asm.id();
+                completedAt = now;
                 completed = true;
-                if (beepOn) player.done();
+                if (beepOn) { player.done(); policy.shouldRepeatDone(now); }
                 runOnUiThread(() -> showResult(c, crc));
             } catch (DataFormatException e) {
                 asm.reset();
+                policy.reset();
                 runOnUiThread(() -> Toast.makeText(this, getString(R.string.verify_failed, e.getMessage()), Toast.LENGTH_LONG).show());
             }
         }
@@ -339,7 +345,7 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
         content = null;
         resultPanel.setVisibility(View.GONE);
         scanPanel.setVisibility(View.VISIBLE);
-        cam.post(() -> { asm.reset(); completed = false; });
+        cam.post(() -> { asm.reset(); policy.reset(); completed = false; completedId = null; });
         renderProgress(0, 0, "", new boolean[0], -1, "");
     }
 }

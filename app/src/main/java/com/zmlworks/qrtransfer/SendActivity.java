@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
@@ -15,12 +16,14 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -36,9 +39,10 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Sender: text or file -> QT1 frames -> animated QR codes.
- * Default: loop all frames forever. With "advance on tone", hold each frame until the receiver's
- * ACK beep (or a timeout), skip frames already acknowledged, and stop on the DONE tone.
+ * Sender: text or file -> QT1 frames -> animated QR codes, two at a time (slot A: even chunks, slot B: odd chunks).
+ * Without the microphone both codes loop. With "advance on tone" each slot advances when the receiver's tone for it
+ * is heard (or after an adaptive timeout), skips confirmed chunks, and the transfer stops on the DONE tone.
+ * Pacing logic: {@link SlotScheduler}.
  */
 public final class SendActivity extends Activity implements AckListener.Callback {
     private static final int REQ_PICK = 1, REQ_MIC = 2;
@@ -51,8 +55,9 @@ public final class SendActivity extends Activity implements AckListener.Callback
     private EditText text;
     private TextView fileInfo, info;
     private Spinner chunk, fps, ecc;
-    private CheckBox ackBox;
-    private ImageView qr;
+    private CheckBox ackBox, twoBox;
+    private LinearLayout qrs;
+    private ImageView[] qr;
     private Button pause;
     private byte[] fileData;
     private String fileName;
@@ -62,11 +67,11 @@ public final class SendActivity extends Activity implements AckListener.Callback
     private Handler worker;
     // --- state below is touched only on the worker thread ---
     private List<String> frames;
-    private boolean[] acked;
-    private int cur, ackCount;
+    private SlotScheduler sched;
+    private final int[] drawn = {-2, -2};
     private boolean ackMode, sending;
     private volatile boolean paused;
-    private long shownAt, periodMs;
+    private long periodMs;
     private ErrorCorrectionLevel ecl;
     private AckListener listener;
 
@@ -83,7 +88,10 @@ public final class SendActivity extends Activity implements AckListener.Callback
         fps = findViewById(R.id.fps);
         ecc = findViewById(R.id.ecc);
         ackBox = findViewById(R.id.ack);
-        qr = findViewById(R.id.qr);
+        twoBox = findViewById(R.id.two);
+        qrs = findViewById(R.id.qrs);
+        qr = new ImageView[]{findViewById(R.id.qr_a), findViewById(R.id.qr_b)};
+        layoutCodes(getResources().getConfiguration());
         pause = findViewById(R.id.pause);
         spinner(chunk, R.array.chunks, 1);
         spinner(fps, R.array.fps, 1);
@@ -95,6 +103,7 @@ public final class SendActivity extends Activity implements AckListener.Callback
         findViewById(R.id.stop).setOnClickListener(v -> stopSending());
         pause.setOnClickListener(v -> { paused = !paused; pause.setText(paused ? "▶" : "⏸"); worker.post(this::schedule); });
         findViewById(R.id.prev).setOnClickListener(v -> step(-1));
+        // (prev/next move both codes while paused)
         findViewById(R.id.next).setOnClickListener(v -> step(1));
         ht = new HandlerThread("qr-sender");
         ht.start();
@@ -181,10 +190,10 @@ public final class SendActivity extends Activity implements AckListener.Callback
         info.setText(R.string.preparing);
         paused = false;
         pause.setText("⏸");
+        final int slots = twoBox.isChecked() ? 2 : 1;
+        qr[1].setVisibility(View.GONE);
         worker.post(() -> {
             frames = Protocol.frames(Protocol.newId(), c, chunkBytes, true);
-            acked = new boolean[frames.size()];
-            ackCount = 0;
             sending = true;
             ackMode = false;
             if (withAck) {
@@ -192,7 +201,10 @@ public final class SendActivity extends Activity implements AckListener.Callback
                 ackMode = listener.start();
                 if (!ackMode) { listener = null; ui.post(() -> toast(getString(R.string.mic_failed))); }
             }
-            showFrame(0);
+            sched = new SlotScheduler(frames.size(), slots, periodMs, ackMode);
+            drawn[0] = drawn[1] = -2;
+            sched.start(SystemClock.uptimeMillis());
+            render();
             schedule();
         });
     }
@@ -223,59 +235,108 @@ public final class SendActivity extends Activity implements AckListener.Callback
     }
 
     // ---------------- frame loop (worker thread) ----------------
-    private void showFrame(int i) {
-        if (!sending) return;
-        cur = i;
-        final Bitmap bmp;
-        try { bmp = QrRender.render(frames.get(i), ecl); } catch (WriterException e) {
-            ui.post(() -> { toast(e.toString()); stopSending(); });
-            return;
+    @Override public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        layoutCodes(c);
+    }
+
+    /** portrait: codes stacked (top = A); landscape: side by side (left = A) */
+    private void layoutCodes(Configuration c) {
+        boolean land = c.orientation == Configuration.ORIENTATION_LANDSCAPE;
+        qrs.setOrientation(land ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        for (ImageView v : qr) {
+            v.setLayoutParams(land ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1)
+                    : new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         }
-        shownAt = SystemClock.uptimeMillis();
-        final String line = String.format(Locale.ROOT, "%d / %d  ·  v%d  ·  %s%s", i + 1, frames.size(), QrRender.version(bmp),
-                frames.get(i).substring(4, 12), ackMode ? "  ·  ACK " + ackCount : "");
+    }
+
+    private Bitmap blank;
+
+    /** Draw whatever the scheduler shows now (only slots that changed are re-rendered). */
+    private void render() {
+        if (!sending || sched == null) return;
+        final Bitmap[] bmp = new Bitmap[2];
+        final boolean[] changed = new boolean[2];
+        int version = 0;
+        for (int s = 0; s < sched.slots; s++) {
+            int i = sched.shown(s);
+            if (i == drawn[s]) continue;
+            drawn[s] = i;
+            changed[s] = true;
+            if (i < 0) {   // idle slot (all its chunks confirmed): plain white, nothing to read
+                if (blank == null) { blank = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888); blank.eraseColor(0xFFFFFFFF); }
+                bmp[s] = blank;
+                continue;
+            }
+            try { bmp[s] = QrRender.render(frames.get(i), ecl); } catch (WriterException e) {
+                ui.post(() -> { toast(e.toString()); stopSending(); });
+                return;
+            }
+            version = QrRender.version(bmp[s]);
+        }
+        StringBuilder line = new StringBuilder();
+        for (int s = 0; s < sched.slots; s++) {
+            int i = sched.shown(s);
+            line.append(s == 0 ? (sched.slots == 2 ? "A " : "") : "   B ").append(i < 0 ? "✓" : String.valueOf(i + 1));
+        }
+        line.append(" / ").append(frames.size());
+        if (version > 0) line.append("  ·  v").append(version);
+        line.append("  ·  ").append(frames.get(0).substring(4, 12));
+        if (ackMode) line.append(String.format(Locale.ROOT, "  ·  ✓%d  %dms", sched.ackedCount(), sched.latencyMs()));
+        if (sched.rounds() > 0) line.append("  ·  R").append(sched.rounds() + 1);
+        final String text = line.toString();
+        final int slots = sched.slots;
         ui.post(() -> {
-            BitmapDrawable d = new BitmapDrawable(getResources(), bmp);
-            d.setFilterBitmap(false);   // crisp modules when scaled up
-            d.setAntiAlias(false);
-            qr.setImageDrawable(d);
-            info.setText(line);
+            for (int s = 0; s < 2; s++) {
+                if (s >= slots) { qr[s].setVisibility(View.GONE); continue; }
+                qr[s].setVisibility(View.VISIBLE);
+                if (!changed[s]) continue;
+                BitmapDrawable d = new BitmapDrawable(getResources(), bmp[s]);
+                d.setFilterBitmap(false);   // crisp modules when scaled up
+                d.setAntiAlias(false);
+                qr[s].setImageDrawable(d);
+            }
+            info.setText(text);
         });
     }
 
-    private int nextIndex(int from) {
-        int n = frames.size();
-        for (int k = 1; k <= n; k++) { int j = (from + k) % n; if (!acked[j]) return j; }
-        java.util.Arrays.fill(acked, false);   // all acknowledged but no DONE: send everything again
-        return (from + 1) % n;
-    }
-
-    private final Runnable tick = () -> { if (!paused && sending) { showFrame(nextIndex(cur)); schedule(); } };
+    private final Runnable tick = () -> {
+        if (paused || !sending || sched == null) return;
+        if (sched.tick(SystemClock.uptimeMillis())) render();
+        schedule();
+    };
 
     private void schedule() {
         worker.removeCallbacks(tick);
-        if (paused || !sending) return;
-        worker.postDelayed(tick, ackMode ? Math.max(600, 3 * periodMs) : periodMs);
+        if (paused || !sending || sched == null) return;
+        long now = SystemClock.uptimeMillis();
+        worker.postDelayed(tick, Math.max(10, sched.nextDeadline(now) - now));
     }
 
     private void step(int d) {
         paused = true;
         pause.setText("▶");
-        worker.post(() -> { worker.removeCallbacks(tick); if (frames != null) showFrame((cur + d + frames.size()) % frames.size()); });
+        worker.post(() -> {
+            worker.removeCallbacks(tick);
+            if (sched == null) return;
+            long now = SystemClock.uptimeMillis();
+            for (int s = 0; s < sched.slots; s++) sched.step(s, d, now);
+            render();
+        });
     }
 
     // AckListener callbacks (listener thread) -> worker thread
-    @Override public void onAck() {
+    @Override public void onAck(int slot) {
+        final long t = SystemClock.uptimeMillis();
         worker.post(() -> {
-            if (!sending) return;
-            // a beep right after switching frames most likely belongs to the previous frame
-            int idx = SystemClock.uptimeMillis() - shownAt < 120 ? (cur - 1 + frames.size()) % frames.size() : cur;
-            if (!acked[idx]) { acked[idx] = true; ackCount++; }
-            if (!paused && idx == cur) { showFrame(nextIndex(cur)); schedule(); }
+            if (!sending || sched == null || paused) return;
+            if (sched.onAck(slot, t)) render();
+            schedule();
         });
     }
 
     @Override public void onDone() {
+        worker.post(() -> { if (sched != null) sched.onDone(); });
         ui.post(() -> {
             if (show.getVisibility() != View.VISIBLE) return;
             stopSending();

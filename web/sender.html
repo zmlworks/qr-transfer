@@ -30,27 +30,39 @@
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   #drop { border:1px dashed #1E4A3C; border-radius:4px; padding:10px; color:var(--dim); text-align:center; }
   #drop.over { border-color:var(--hi); color:var(--hi); }
-  #qr { background:#fff; image-rendering:pixelated; max-width:min(92vw, 80vh); width:100%; height:auto; border-radius:4px; }
+  #codes { display:flex; gap:24px; width:100%; justify-content:center; align-items:flex-start; flex-direction:row; }
+  #codes canvas { background:#fff; image-rendering:pixelated; border-radius:4px; height:auto;
+                  flex:1 1 0; min-width:0; width:100%; max-width:80vh; }
+  @media (orientation: portrait) {
+    #codes { flex-direction:column; align-items:center; }
+    #codes canvas { flex:none; width:100%; max-width:min(92vw, 40vh); }
+  }
+  #codes canvas.idle { opacity:.15; }
   #info { font:14px ui-monospace, monospace; }
   #status { color:var(--dim); font-size:13px; }
   small { color:var(--dim); }
+  body.running .opt { display:none; }   /* while sending: only the controls, so both codes fit the screen */
+  body.running #setup { flex:0 0 auto; }
 </style>
 </head>
 <body>
 <header><h1>QR分割転送 — 送信 <small>(QT1 / offline)</small></h1><span id="status">準備完了 / ready</span></header>
 <main>
 <section id="setup">
-  <label for="text">テキスト / Text</label>
-  <textarea id="text" placeholder="送るテキスト… / text to send…"></textarea>
-  <div id="drop">または ファイルをドロップ / or drop a file here &nbsp; <input type="file" id="file"></div>
-  <div id="fileinfo"><small></small></div>
-  <div class="row">
+  <label class="opt" for="text">テキスト / Text</label>
+  <textarea class="opt" id="text" placeholder="送るテキスト… / text to send…"></textarea>
+  <div class="opt" id="drop">または ファイルをドロップ / or drop a file here &nbsp; <input type="file" id="file"></div>
+  <div class="opt" id="fileinfo"><small></small></div>
+  <div class="row opt">
     <label>チャンク <select id="chunk"><option value="200">小 200 B</option><option value="400" selected>中 400 B</option><option value="700">大 700 B</option><option value="1000">特大 1000 B</option></select></label>
     <label>速度 <select id="fps"><option>2</option><option selected>4</option><option>6</option><option>10</option></select> fps</label>
     <label>誤り訂正 <select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
   </div>
-  <div class="row">
-    <label><input type="checkbox" id="ack"> 受信側の音で進める (マイク) / advance on receiver's tone (mic)</label>
+  <div class="row opt">
+    <label><input type="checkbox" id="ack" checked> 受信側の確認音で進める (マイク) / advance on receiver's tones (mic)</label>
+  </div>
+  <div class="row opt">
+    <label><input type="checkbox" id="two" checked> 2枚同時に表示 (受信側 0.2.0 以降・約2倍速) / two codes at once (receiver 0.2.0+, ~2× faster)</label>
   </div>
   <div class="row">
     <button class="primary" id="start">▶ 送信開始 / Start</button>
@@ -59,11 +71,13 @@
     <button id="next" disabled>▶</button>
     <button class="stop" id="stop" disabled>■</button>
   </div>
-  <small>プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
-  音モード: 受信側が新しいチャンクごとに 1900 Hz、完了時に 2850 Hz を鳴らします。マイクは file:// や localhost で許可が必要です。</small>
+  <small class="opt">プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
+  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音: 受信側は左(上)のコードを読むと 1500 Hz、右(下)は 2200 Hz、完了で 2700 Hz を鳴らします。
+  送信機はマイクで聞き取り、左右それぞれを独立にすぐ次へ進め、確認できなかった分は後で再送し、完了音で停止します。
+  マイクが使えない・許可されないときは単純ループで送信します (ブラウザがマイク許可を尋ねます)。</small>
 </section>
 <section id="show">
-  <canvas id="qr" width="10" height="10"></canvas>
+  <div id="codes"><canvas id="qrA" width="10" height="10"></canvas><canvas id="qrB" width="10" height="10"></canvas></div>
   <div id="info">—</div>
 </section>
 </main>
@@ -2439,8 +2453,122 @@ var QT1 = (function () {
     if (e <= 0) return 0;
     return (s1 * s1 + s2 * s2 - coeff * s1 * s2) / e * 2 * sw2 / (sw * sw);
   }
+  // ---- acknowledgment tones (same as the app's Tone.java) ----
+  // slot A (top/left code, even chunks) 1500 Hz, slot B (bottom/right, odd chunks) 2200 Hz, DONE 2700 Hz (long).
+  var A_HZ = 1500, B_HZ = 2200, DONE_HZ = 2700, ACK_BLOCKS = 2, DONE_BLOCKS = 8, THRESHOLD = 0.40, MIN_RMS = 120 / 32767;
+  /** debounced single-frequency detector: true once per tone after `need` consecutive matching blocks */
+  function Detector(hz, need, rate) {
+    var run = 0, fired = false;
+    this.feed = function (x) {
+      var e = 0;
+      for (var i = 0; i < x.length; i++) e += x[i] * x[i];
+      var hit = Math.sqrt(e / x.length) >= MIN_RMS && toneRatio(x, hz, rate) >= THRESHOLD;
+      if (hit) { run++; if (run >= need && !fired) { fired = true; return true; } }
+      else { run = 0; fired = false; }
+      return false;
+    };
+  }
+  /** feeds arbitrary-length sample chunks in 16 ms blocks; returns events ["A"|"B"|"DONE", ...] */
+  function Listener(rate) {
+    var block = Math.round(rate * 0.016), buf = new Float32Array(block), n = 0;
+    var a = new Detector(A_HZ, ACK_BLOCKS, rate), b = new Detector(B_HZ, ACK_BLOCKS, rate), d = new Detector(DONE_HZ, DONE_BLOCKS, rate);
+    this.block = block;
+    this.feed = function (x) {
+      var ev = [];
+      for (var i = 0; i < x.length; i++) {
+        buf[n++] = x[i];
+        if (n === block) {
+          n = 0;
+          if (a.feed(buf)) ev.push("A");
+          if (b.feed(buf)) ev.push("B");
+          if (d.feed(buf)) ev.push("DONE");
+        }
+      }
+      return ev;
+    };
+  }
+
+  // ---- sender pacing for 1 or 2 codes (line-by-line port of the app's SlotScheduler.java) ----
+  var GUARD_MS = 150, MIN_TIMEOUT_MS = 500, MAX_TIMEOUT_MS = 4000, INIT_LATENCY_MS = 600, VERIFY_MS = 2500;
+  function Scheduler(total, slots, periodMs, ackMode) {
+    slots = Math.min(slots, total);
+    var acked = new Array(total).fill(false), ackedCount = 0, rounds = 0;
+    var cur = [], prev = [], shownAt = [], latency = INIT_LATENCY_MS, allAckedAt = -1, finished = false;
+    for (var k = 0; k < slots; k++) { cur.push(-1); prev.push(-1); shownAt.push(0); }
+    function first(s) { return slots === 1 ? 0 : s; }
+    function count(s) { return Math.floor((total - first(s) + slots - 1) / slots); }
+    function show(s, i, now) { if (cur[s] >= 0) prev[s] = cur[s]; cur[s] = i; shownAt[s] = now; }
+    function next(s, from) {
+      var n = count(s), pos = from < 0 ? -1 : Math.floor((from - first(s)) / slots);
+      for (var k = 1; k <= n; k++) { var j = first(s) + ((pos + k) % n) * slots; if (!ackMode || !acked[j]) return j; }
+      return -1;
+    }
+    function mark(i) { if (i >= 0 && !acked[i]) { acked[i] = true; ackedCount++; } }
+    function checkAll(now) { if (ackedCount === total && allAckedAt < 0) allAckedAt = now; return false; }
+    function timeoutMs() {
+      if (!ackMode) return periodMs;
+      var t = Math.round(2.5 * latency + 200);
+      return Math.max(Math.max(MIN_TIMEOUT_MS, periodMs), Math.min(MAX_TIMEOUT_MS, t));
+    }
+    var self = {
+      total: total, slots: slots, ackMode: ackMode,
+      start: function (now) { for (var s = 0; s < slots; s++) show(s, first(s), now); },
+      shown: function (s) { return s < slots ? cur[s] : -1; },
+      ackedCount: function () { return ackedCount; },
+      rounds: function () { return rounds; },
+      finished: function () { return finished; },
+      latencyMs: function () { return Math.round(latency); },
+      timeoutMs: timeoutMs,
+      onAck: function (tone, now) {
+        if (!ackMode || finished) return false;
+        var s = slots === 1 ? 0 : tone;
+        if (s >= slots) return false;
+        if (cur[s] < 0) { if (prev[s] >= 0 && now - shownAt[s] < GUARD_MS) mark(prev[s]); return checkAll(now); }
+        var dt = now - shownAt[s];
+        if (dt < GUARD_MS && prev[s] >= 0) { mark(prev[s]); return checkAll(now); }
+        mark(cur[s]);
+        latency = latency * 0.7 + Math.min(dt, MAX_TIMEOUT_MS) * 0.3;
+        show(s, next(s, cur[s]), now);
+        checkAll(now);
+        return true;
+      },
+      onDone: function () { finished = true; },
+      tick: function (now) {
+        if (finished) return false;
+        var changed = false, s;
+        if (ackMode && ackedCount === total) {
+          if (allAckedAt < 0) allAckedAt = now;
+          if (now - allAckedAt >= VERIFY_MS) {
+            acked.fill(false); ackedCount = 0; allAckedAt = -1; rounds++;
+            for (s = 0; s < slots; s++) show(s, next(s, cur[s] >= 0 ? cur[s] : -1), now);
+            return true;
+          }
+        }
+        var t = timeoutMs();
+        for (s = 0; s < slots; s++) {
+          if (cur[s] < 0) { var n = ackMode ? next(s, -1) : -1; if (n >= 0) { show(s, n, now); changed = true; } continue; }
+          if (now - shownAt[s] >= t) { show(s, next(s, cur[s]), now); changed = true; }
+        }
+        return changed;
+      },
+      nextDeadline: function (now) {
+        var t = timeoutMs(), d = now + Math.max(t, 50);
+        for (var s = 0; s < slots; s++) if (cur[s] >= 0) d = Math.min(d, shownAt[s] + t);
+        if (ackMode && allAckedAt >= 0) d = Math.min(d, allAckedAt + VERIFY_MS);
+        return Math.max(d, now + 10);
+      },
+      step: function (s, d, now) {
+        if (s >= slots) return;
+        var c = cur[s] < 0 ? first(s) : cur[s], n = count(s), pos = Math.floor((c - first(s)) / slots);
+        pos = ((pos + d) % n + n) % n;
+        show(s, first(s) + pos * slots, now);
+      }
+    };
+    return self;
+  }
+
   return { crc32: crc32, hex8: hex8, base45: base45, envelope: envelope, frames: frames, newId: newId, toneRatio: toneRatio,
-           ACK_HZ: 1900, DONE_HZ: 2850 };
+           A_HZ: A_HZ, B_HZ: B_HZ, DONE_HZ: DONE_HZ, Detector: Detector, Listener: Listener, Scheduler: Scheduler };
 })();
 if (typeof module !== "undefined") module.exports = QT1;
 </script>
@@ -2449,8 +2577,8 @@ if (typeof module !== "undefined") module.exports = QT1;
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var file = null, frames = [], cur = 0, running = false, paused = false, timer = null;
-  var acked = [], ackMode = false, lastShown = 0, mic = null;
+  var file = null, frames = [], running = false, paused = false, timer = null, sched = null, mic = null, ackMode = false;
+  var canvases = [$("qrA"), $("qrB")], drawn = [-2, -2];
 
   function setStatus(s) { $("status").textContent = s; }
   function readFile(f) {
@@ -2463,55 +2591,77 @@ if (typeof module !== "undefined") module.exports = QT1;
   drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
   drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
 
-  function draw(i) {
+  var version = 0;
+  function drawCode(cv, text) {
     var qr = qrcode(0, $("ecc").value);
-    qr.addData(frames[i], "Alphanumeric");
+    qr.addData(text, "Alphanumeric");
     qr.make();
     var n = qr.getModuleCount(), quiet = 4, scale = Math.max(2, Math.floor(800 / (n + 2 * quiet)));
-    var cv = $("qr"), size = (n + 2 * quiet) * scale, g = cv.getContext("2d");
+    var size = (n + 2 * quiet) * scale, g = cv.getContext("2d");
     if (cv.width !== size) { cv.width = size; cv.height = size; }
     g.fillStyle = "#fff"; g.fillRect(0, 0, size, size); g.fillStyle = "#000";
     for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
-    cur = i; lastShown = performance.now();
-    var done = acked.filter(Boolean).length;
-    $("info").textContent = (i + 1) + " / " + frames.length + "   v" + ((n - 17) / 4) + "   " + frames[i].slice(4, 12) + (ackMode ? "   ACK " + done : "");
+    version = (n - 17) / 4;
   }
-  function nextIndex(from) {
-    for (var k = 1; k <= frames.length; k++) { var j = (from + k) % frames.length; if (!acked[j]) return j; }
-    acked = []; return (from + 1) % frames.length;   // everything acked but no DONE yet: send all again
+  function render() {
+    if (!sched) return;
+    var parts = [];
+    for (var s = 0; s < 2; s++) {
+      var cv = canvases[s];
+      if (s >= sched.slots) { cv.style.display = "none"; continue; }
+      cv.style.display = "";
+      var i = sched.shown(s);
+      if (i !== drawn[s]) {
+        drawn[s] = i;
+        if (i < 0) { var g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height); cv.classList.add("idle"); }
+        else { drawCode(cv, frames[i]); cv.classList.remove("idle"); }
+      }
+      parts.push((sched.slots === 2 ? (s === 0 ? "A " : "B ") : "") + (i < 0 ? "✓" : i + 1));
+    }
+    var line = parts.join("   ") + " / " + frames.length + "   v" + version + "   " + frames[0].slice(4, 12);
+    if (ackMode) line += "   ✓" + sched.ackedCount() + "  " + sched.latencyMs() + "ms";
+    if (sched.rounds() > 0) line += "   R" + (sched.rounds() + 1);
+    $("info").textContent = line;
   }
-  function period() { return 1000 / Number($("fps").value); }
   function schedule() {
     clearTimeout(timer);
-    if (!running || paused) return;
-    // ack mode: hold a frame until its tone arrives, but never longer than 3 periods
-    timer = setTimeout(function () { draw(nextIndex(cur)); schedule(); }, ackMode ? Math.max(600, 3 * period()) : period());
+    if (!running || paused || !sched) return;
+    var now = performance.now();
+    timer = setTimeout(function () {
+      if (!running || paused) return;
+      if (sched.tick(performance.now())) render();
+      schedule();
+    }, Math.max(10, sched.nextDeadline(now) - now));
   }
-  function onAck() {
-    if (!running) return;
-    // a tone right after a frame change most likely belongs to the previous frame
-    var idx = performance.now() - lastShown < 120 ? (cur - 1 + frames.length) % frames.length : cur;
-    acked[idx] = true;
-    if (!paused && idx === cur) { draw(nextIndex(cur)); schedule(); }
+  function onAck(slot) {
+    if (!running || paused || !sched) return;
+    if (sched.onAck(slot, performance.now())) render();
+    schedule();
   }
-  function onDone() { if (running) { stop(); setStatus("受信完了 (完了音を検出) / receiver finished"); } }
+  function onDone() { if (running) { if (sched) sched.onDone(); stop(); setStatus("受信完了 (完了音を検出) / receiver finished ✓"); } }
 
+  /** microphone → 16 ms blocks → Goertzel detectors for A / B / DONE */
   async function startMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("getUserMedia unavailable");
     var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    var src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser();
-    an.fftSize = 512; src.connect(an);
-    var buf = new Float32Array(an.fftSize), runA = 0, runD = 0, firedA = false, firedD = false;
-    var iv = setInterval(function () {
-      an.getFloatTimeDomainData(buf);
-      var e = 0; for (var i = 0; i < buf.length; i++) e += buf[i] * buf[i];
-      var loud = Math.sqrt(e / buf.length) > 0.004;
-      var a = loud && QT1.toneRatio(buf, QT1.ACK_HZ, ctx.sampleRate) > 0.45;
-      var d = loud && QT1.toneRatio(buf, QT1.DONE_HZ, ctx.sampleRate) > 0.45;
-      if (a) { if (++runA >= 2 && !firedA) { firedA = true; onAck(); } } else { runA = 0; firedA = false; }
-      if (d) { if (++runD >= 8 && !firedD) { firedD = true; onDone(); } } else { runD = 0; firedD = false; }
-    }, 10);
-    return { stop: function () { clearInterval(iv); stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close(); } };
+    if (ctx.state === "suspended") { try { await ctx.resume(); } catch (e) { /* resumed by the click */ } }
+    var src = ctx.createMediaStreamSource(stream), listener = new QT1.Listener(ctx.sampleRate), node, iv = null;
+    var handle = function (ev) { ev.forEach(function (e) { if (e === "A") onAck(0); else if (e === "B") onAck(1); else onDone(); }); };
+    if (ctx.createScriptProcessor) {
+      // contiguous samples (no gaps), unlike polling an AnalyserNode
+      node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = function (e) { handle(listener.feed(e.inputBuffer.getChannelData(0))); };
+      var mute = ctx.createGain(); mute.gain.value = 0;
+      src.connect(node); node.connect(mute); mute.connect(ctx.destination);
+    } else {
+      node = ctx.createAnalyser(); node.fftSize = 2048; src.connect(node);
+      // fallback (very old browsers): polled snapshots, may miss or repeat a few samples
+      var buf = new Float32Array(listener.block);
+      iv = setInterval(function () { node.getFloatTimeDomainData(buf); handle(listener.feed(buf)); }, 16);
+    }
+    return { stop: function () { if (iv) clearInterval(iv); try { node.disconnect(); } catch (e) { /* already */ }
+      stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close(); } };
   }
 
   async function start() {
@@ -2520,27 +2670,41 @@ if (typeof module !== "undefined") module.exports = QT1;
     else { isFile = false; name = ""; data = new TextEncoder().encode($("text").value); }
     if (!data.length) { setStatus("送るデータがありません / nothing to send"); return; }
     frames = await QT1.frames(QT1.newId(), isFile, name, data, Number($("chunk").value), true);
-    acked = []; ackMode = $("ack").checked; running = true; paused = false;
+    ackMode = $("ack").checked; running = true; paused = false;
+    var note = "";
     if (ackMode) {
-      try { mic = await startMic(); } catch (e) { ackMode = false; setStatus("マイク使用不可、連続ループで送信 / mic unavailable, looping: " + e.name); }
+      try { mic = await startMic(); }
+      catch (e) { ackMode = false; mic = null; note = "  (マイク使用不可、ループ送信 / mic unavailable, looping: " + (e.name || e.message) + ")"; }
     }
+    sched = QT1.Scheduler(frames.length, $("two").checked ? 2 : 1, 1000 / Number($("fps").value), ackMode);
+    drawn = [-2, -2];
+    sched.start(performance.now());
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = false; });
     $("start").disabled = true;
-    if (!ackMode || mic) setStatus("送信中 / sending: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]);
-    draw(0); schedule();
+    document.body.classList.add("running");
+    setStatus("送信中 / sending: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]
+      + (ackMode ? "  🎤" : "") + note);
+    render(); schedule();
   }
   function stop() {
     running = false; clearTimeout(timer);
     if (mic) { mic.stop(); mic = null; }
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = true; });
     $("start").disabled = false;
-    setStatus("停止 / stopped");
+    document.body.classList.remove("running");
+    if (!/✓/.test($("status").textContent)) setStatus("停止 / stopped");
   }
-  $("start").onclick = function () { start().catch(function (e) { setStatus("エラー: " + e); }); };
+  function step(d) {
+    if (!sched) return;
+    paused = true; $("pause").textContent = "▶"; clearTimeout(timer);
+    for (var s = 0; s < sched.slots; s++) sched.step(s, d, performance.now());
+    render();
+  }
+  $("start").onclick = function () { setStatus("準備中 / preparing…"); start().catch(function (e) { setStatus("エラー: " + e); }); };
   $("stop").onclick = stop;
   $("pause").onclick = function () { paused = !paused; this.textContent = paused ? "▶" : "⏸"; schedule(); };
-  $("prev").onclick = function () { paused = true; $("pause").textContent = "▶"; draw((cur - 1 + frames.length) % frames.length); };
-  $("next").onclick = function () { paused = true; $("pause").textContent = "▶"; draw((cur + 1) % frames.length); };
+  $("prev").onclick = function () { step(-1); };
+  $("next").onclick = function () { step(1); };
   document.addEventListener("keydown", function (e) {
     if (!running || e.target.tagName === "TEXTAREA") return;
     if (e.key === " ") { e.preventDefault(); $("pause").onclick.call($("pause")); }

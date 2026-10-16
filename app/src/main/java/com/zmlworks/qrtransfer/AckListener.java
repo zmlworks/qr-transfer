@@ -5,9 +5,9 @@ import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 
-/** Sender side: listens on the microphone for the receiver's ACK / DONE tones. */
+/** Sender side: listens on the microphone for the receiver's slot A / slot B / DONE tones. */
 final class AckListener {
-    interface Callback { void onAck(); void onDone(); }
+    interface Callback { void onAck(int slot); void onDone(); }
 
     private final Callback cb;
     private volatile boolean running;
@@ -28,7 +28,7 @@ final class AckListener {
         if (rec.getState() != AudioRecord.STATE_INITIALIZED) { rec.release(); return false; }
         running = true;
         thread = new Thread(() -> {
-            Tone.Detector ack = new Tone.Detector(Tone.ACK_HZ, 2, Tone.RATE), done = new Tone.Detector(Tone.DONE_HZ, 8, Tone.RATE);
+            Tone.Listener tones = new Tone.Listener(Tone.RATE);
             short[] buf = new short[Tone.BLOCK];
             try {
                 rec.startRecording();
@@ -40,10 +40,13 @@ final class AckListener {
                         n += r;
                     }
                     if (n < buf.length) break;
-                    if (ack.feed(buf, 0, n)) cb.onAck();
-                    if (done.feed(buf, 0, n)) cb.onDone();
+                    int ev = tones.feed(buf, 0, n);
+                    if ((ev & (1 << Tone.EV_A)) != 0) cb.onAck(0);
+                    if ((ev & (1 << Tone.EV_B)) != 0) cb.onAck(1);
+                    if ((ev & (1 << Tone.EV_DONE)) != 0) cb.onDone();
                 }
             } catch (IllegalStateException ignored) {
+                // recorder died (e.g. another app took the mic): the sender falls back to its timeouts
             } finally {
                 try { rec.stop(); } catch (IllegalStateException ignored) { }
                 rec.release();

@@ -80,6 +80,14 @@
                 android:buttonTint="@color/hi"
                 android:text="@string/ack_mode" />
 
+            <CheckBox
+                android:id="@+id/two"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:buttonTint="@color/hi"
+                android:checked="true"
+                android:text="@string/two_codes" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -105,15 +113,32 @@
         android:orientation="vertical"
         android:visibility="gone">
 
-        <ImageView
-            android:id="@+id/qr"
+        <!-- two codes: stacked in portrait (phones are ~1:2), side by side in landscape (set in code) -->
+        <LinearLayout
+            android:id="@+id/qrs"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:adjustViewBounds="true"
-            android:contentDescription="@string/qr_desc"
-            android:padding="8dp"
-            android:scaleType="fitCenter" />
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/qr_a"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:contentDescription="@string/qr_desc"
+                android:padding="6dp"
+                android:scaleType="fitCenter" />
+
+            <ImageView
+                android:id="@+id/qr_b"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:contentDescription="@string/qr_desc"
+                android:padding="6dp"
+                android:scaleType="fitCenter" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/info"
