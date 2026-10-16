@@ -1,27 +1,32 @@
 package com.zmlworks.qrtransfer;
 
 /**
- * Receiver side: which acknowledgment tone to play for a decoded frame.
- * The slot is the chunk number's parity (even → A, odd → B), so it is known from the frame itself, independent of
- * where the code is in the camera image. A tone is played when the slot shows a different chunk than last time,
- * or again after {@link #REACK_MS} if the sender keeps showing the same one (its ack was not heard → resend).
- * Duplicates (already received) are acknowledged too, otherwise the sender could not move on.
+ * Receiver side of the alternating-bit acknowledgment (v0.3.0): which tone to play for a decoded frame.
+ * <p>The tone is a function of the chunk index alone ({@link Tone#toneOf}: slot = index &amp; 1, bit = (index &gt;&gt; 1) &amp; 1),
+ * so it does not depend on where the code is in the camera image nor on how many codes the sender shows.
+ * <ul>
+ *   <li>A chunk is acknowledged as soon as it is decoded, whether new or a duplicate (the sender may have missed the
+ *       earlier ack and is still showing it).</li>
+ *   <li>Repeats are de-duplicated per slot: while the same chunk stays in view it is re-acknowledged only every
+ *       {@link #REACK_MS} (in case that ack was lost too), not on every camera frame.</li>
+ *   <li>A late re-ack of a chunk the sender has already left carries the other bit, so the sender ignores it.</li>
+ * </ul>
  */
 public final class AckPolicy {
-    public static final long REACK_MS = 1000, DONE_REPEAT_MS = 2000;
+    public static final long REACK_MS = 700, DONE_REPEAT_MS = 2000;
     private final int[] last = {-1, -1};
     private final long[] at = {Long.MIN_VALUE / 2, Long.MIN_VALUE / 2};
     private long doneAt = Long.MIN_VALUE / 2;
 
     public static int slotOf(int index) { return index & 1; }
 
-    /** @return slot whose tone to play now (0/1), or -1 for none */
+    /** @return tone id (Tone.A0..B1) to play now, or -1 for none */
     public int onFrame(int index, long nowMs) {
         int s = slotOf(index);
         if (index != last[s] || nowMs - at[s] >= REACK_MS) {
             last[s] = index;
             at[s] = nowMs;
-            return s;
+            return Tone.toneOf(index);
         }
         return -1;
     }

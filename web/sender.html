@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;">
-<title>QR分割転送 — 送信 (QT1)</title>
+<title>QR分割転送 — 送信 (QT1, v0.3.0)</title>
 <style>
   :root { --bg:#002218; --bg2:#00140E; --panel:#0A3226; --text:#C6CFC6; --dim:#7F8F86; --accent:#3D0105; --hi:#00A2E8; }
   * { box-sizing: border-box; }
@@ -40,13 +40,26 @@
   #codes canvas.idle { opacity:.15; }
   #info { font:14px ui-monospace, monospace; }
   #status { color:var(--dim); font-size:13px; }
+  #state { width:100%; max-width:900px; font:13px/1.5 ui-monospace, monospace; display:flex; flex-direction:column; gap:4px; }
+  #mode { padding:4px 8px; border-radius:4px; font-weight:600; }
+  #mode.ack { background:#0B4A2E; color:#B9F6CA; border:1px solid #2E7D32; }
+  #mode.loop { background:#4A3A0B; color:#FFE9A8; border:1px solid #B28704; }
+  #lamps { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .lamp { padding:1px 8px; border-radius:10px; border:1px solid #1E4A3C; color:var(--dim); }
+  .lamp.exp { border-color:var(--hi); color:var(--text); }
+  .lamp.live { background:#123A52; }
+  .lamp.ok { background:#2E7D32; color:#fff; }
+  .lamp.stale { background:#6D4C41; color:#fff; }
+  #meterbox { width:120px; height:8px; background:var(--bg2); border:1px solid #1E4A3C; display:inline-block; vertical-align:middle; }
+  #meterbar { height:100%; width:0; background:var(--hi); }
+  #hint { color:#FFB74D; }
   small { color:var(--dim); }
   body.running .opt { display:none; }   /* while sending: only the controls, so both codes fit the screen */
   body.running #setup { flex:0 0 auto; }
 </style>
 </head>
 <body>
-<header><h1>QR分割転送 — 送信 <small>(QT1 / offline)</small></h1><span id="status">準備完了 / ready</span></header>
+<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.3.0)</small></h1><span id="status">準備完了 / ready</span></header>
 <main>
 <section id="setup">
   <label class="opt" for="text">テキスト / Text</label>
@@ -62,7 +75,7 @@
     <label><input type="checkbox" id="ack" checked> 受信側の確認音で進める (マイク) / advance on receiver's tones (mic)</label>
   </div>
   <div class="row opt">
-    <label><input type="checkbox" id="two" checked> 2枚同時に表示 (受信側 0.2.0 以降・約2倍速) / two codes at once (receiver 0.2.0+, ~2× faster)</label>
+    <label><input type="checkbox" id="two" checked> 2枚同時に表示 (約2倍速) / two codes at once (~2× faster)</label>
   </div>
   <div class="row">
     <button class="primary" id="start">▶ 送信開始 / Start</button>
@@ -72,13 +85,27 @@
     <button class="stop" id="stop" disabled>■</button>
   </div>
   <small class="opt">プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
-  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音: 受信側は左(上)のコードを読むと 1500 Hz、右(下)は 2200 Hz、完了で 2700 Hz を鳴らします。
-  送信機はマイクで聞き取り、左右それぞれを独立にすぐ次へ進め、確認できなかった分は後で再送し、完了音で停止します。
-  マイクが使えない・許可されないときは単純ループで送信します (ブラウザがマイク許可を尋ねます)。</small>
+  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音 (v0.3.0、交互ビット): 受信側 (0.3.0 以降) は読んだチャンクごとに、
+  左(上)なら 1350 / 1700 Hz、右(下)なら 2050 / 2400 Hz を 1枚ごとに交互に鳴らし (A0/A1/B0/B1)、完了で 3050 Hz を長めに鳴らします。
+  マイク確認モードでは、表示中のチャンクちょうどの確認音を聞いたコードだけが次へ進みます (タイムアウトで飛ばすことはありません。
+  古い確認音は無視)。マイクが許可されない・使えないときだけループモードになります。モードと検出した音は下に表示されます。
+  / Mic-ack mode: a code advances only on the alternating-bit ack for exactly the chunk it shows (no timeouts, stale acks ignored); loop mode only if the mic is refused/unavailable.</small>
 </section>
 <section id="show">
   <div id="codes"><canvas id="qrA" width="10" height="10"></canvas><canvas id="qrB" width="10" height="10"></canvas></div>
   <div id="info">—</div>
+  <div id="state">
+    <div id="mode"></div>
+    <div id="slots"></div>
+    <div id="lamps">確認音 / tones:
+      <span class="lamp" id="lamp0" title="1350 Hz">A0 1350</span><span class="lamp" id="lamp1" title="1700 Hz">A1 1700</span>
+      <span class="lamp" id="lamp2" title="2050 Hz">B0 2050</span><span class="lamp" id="lamp3" title="2400 Hz">B1 2400</span>
+      <span class="lamp" id="lamp4" title="3050 Hz">DONE 3050</span>
+      <span id="meterbox"><span id="meterbar" style="display:block"></span></span> <span id="meter"></span>
+      <button id="toloop" style="display:none">🔁 ループに切替 / switch to loop</button></div>
+    <div id="counts"></div>
+    <div id="hint"></div>
+  </div>
 </section>
 </main>
 <script id="qrlib">
@@ -2443,8 +2470,9 @@ var QT1 = (function () {
     return out;
   }
   /** fraction of block energy at hz (1 = pure tone), Hann-windowed generalized Goertzel */
-  function toneRatio(x, hz, rate) {
-    var n = x.length, w = 2 * Math.PI * hz / rate, coeff = 2 * Math.cos(w), s1 = 0, s2 = 0, e = 0, sw = 0, sw2 = 0;
+  function toneRatio(x, hz, rate, n) {
+    n = n || x.length;
+    var w = 2 * Math.PI * hz / rate, coeff = 2 * Math.cos(w), s1 = 0, s2 = 0, e = 0, sw = 0, sw2 = 0;
     for (var i = 0; i < n; i++) {
       var win = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)), v = x[i] * win;
       e += v * v; sw += win; sw2 += win * win;
@@ -2453,35 +2481,46 @@ var QT1 = (function () {
     if (e <= 0) return 0;
     return (s1 * s1 + s2 * s2 - coeff * s1 * s2) / e * 2 * sw2 / (sw * sw);
   }
-  // ---- acknowledgment tones (same as the app's Tone.java) ----
-  // slot A (top/left code, even chunks) 1500 Hz, slot B (bottom/right, odd chunks) 2200 Hz, DONE 2700 Hz (long).
-  var A_HZ = 1500, B_HZ = 2200, DONE_HZ = 2700, ACK_BLOCKS = 2, DONE_BLOCKS = 8, THRESHOLD = 0.40, MIN_RMS = 120 / 32767;
-  /** debounced single-frequency detector: true once per tone after `need` consecutive matching blocks */
-  function Detector(hz, need, rate) {
-    var run = 0, fired = false;
-    this.feed = function (x) {
-      var e = 0;
-      for (var i = 0; i < x.length; i++) e += x[i] * x[i];
-      var hit = Math.sqrt(e / x.length) >= MIN_RMS && toneRatio(x, hz, rate) >= THRESHOLD;
-      if (hit) { run++; if (run >= need && !fired) { fired = true; return true; } }
-      else { run = 0; fired = false; }
-      return false;
-    };
+  // ---- acknowledgment tones, v0.3.0 alternating bit (same as the app's Tone.java) ----
+  // chunk i is acked by tone toneOf(i): slot = i & 1 (A top/left even, B bottom/right odd), bit = (i >> 1) & 1.
+  // A0 1350 Hz, A1 1700 Hz, B0 2050 Hz, B1 2400 Hz (80 ms each); DONE 3050 Hz (400 ms).
+  var A0 = 0, A1 = 1, B0 = 2, B1 = 3, DONE = 4, COUNT = 5;
+  var HZ = [1350, 1700, 2050, 2400, 3050], NAMES = ["A0", "A1", "B0", "B1", "DONE"];
+  var ACK_MS = 80, DONE_MS = 400, GAP_MS = 40, ACK_BLOCKS = 3, DONE_BLOCKS = 10;
+  var MIN_RATIO = 0.30, NEIGHBOUR_HZ = 190, NEIGHBOUR_FACTOR = 6, OTHER_FACTOR = 6, MIN_RMS = 120 / 32767, FLOOR_FACTOR = 2.0;
+  function toneOf(i) { return (i & 1) * 2 + ((i >> 1) & 1); }
+  /** dominant protocol tone of one block (or -1): loud enough, ≥ MIN_RATIO of the energy, ≥ 6× the bins ±190 Hz and
+   *  ≥ 6× every other tone (see Tone.classify) */
+  function classify(x, n, rate, floor, r) {
+    var e = 0, k, best = -1;
+    for (var i = 0; i < n; i++) e += x[i] * x[i];
+    var rms = Math.sqrt(e / n);
+    for (k = 0; k < COUNT; k++) { r[k] = toneRatio(x, HZ[k], rate, n); if (best < 0 || r[k] > r[best]) best = k; }
+    if (rms < MIN_RMS || rms < FLOOR_FACTOR * floor || r[best] < MIN_RATIO) return -1;
+    for (k = 0; k < COUNT; k++) if (k !== best && r[best] < OTHER_FACTOR * r[k]) return -1;
+    var lo = toneRatio(x, HZ[best] - NEIGHBOUR_HZ, rate, n), hi = toneRatio(x, HZ[best] + NEIGHBOUR_HZ, rate, n);
+    if (r[best] < NEIGHBOUR_FACTOR * Math.max(lo, hi)) return -1;
+    return best;
   }
-  /** feeds arbitrary-length sample chunks in 16 ms blocks; returns events ["A"|"B"|"DONE", ...] */
+  /** feeds arbitrary-length sample chunks in 16 ms blocks; returns detected tone ids (A0..DONE), one per tone burst */
   function Listener(rate) {
-    var block = Math.round(rate * 0.016), buf = new Float32Array(block), n = 0;
-    var a = new Detector(A_HZ, ACK_BLOCKS, rate), b = new Detector(B_HZ, ACK_BLOCKS, rate), d = new Detector(DONE_HZ, DONE_BLOCKS, rate);
-    this.block = block;
+    var block = Math.round(rate * 0.016), buf = new Float32Array(block), n = 0, ratios = new Array(COUNT);
+    var run = 0, runTone = -1, fired = false, floor = 0, self = this;
+    this.block = block; this.lastClass = -1; this.lastRms = 0;
     this.feed = function (x) {
       var ev = [];
       for (var i = 0; i < x.length; i++) {
         buf[n++] = x[i];
         if (n === block) {
           n = 0;
-          if (a.feed(buf)) ev.push("A");
-          if (b.feed(buf)) ev.push("B");
-          if (d.feed(buf)) ev.push("DONE");
+          var e = 0;
+          for (var j = 0; j < block; j++) e += buf[j] * buf[j];
+          var rms = Math.sqrt(e / block), c = classify(buf, block, rate, floor, ratios);
+          self.lastClass = c; self.lastRms = rms;
+          if (c < 0) floor = rms < floor ? 0.7 * floor + 0.3 * rms : 0.98 * floor + 0.02 * rms;
+          if (c >= 0 && c === runTone) run++;
+          else { run = c >= 0 ? 1 : 0; runTone = c; fired = false; }
+          if (c >= 0 && run >= (c === DONE ? DONE_BLOCKS : ACK_BLOCKS) && !fired) { fired = true; ev.push(c); }
         }
       }
       return ev;
@@ -2489,72 +2528,75 @@ var QT1 = (function () {
   }
 
   // ---- sender pacing for 1 or 2 codes (line-by-line port of the app's SlotScheduler.java) ----
-  var GUARD_MS = 150, MIN_TIMEOUT_MS = 500, MAX_TIMEOUT_MS = 4000, INIT_LATENCY_MS = 600, VERIFY_MS = 2500;
+  // loop mode: each slot cycles its chunks every period. ack mode: a slot advances ONLY on the ack tone of exactly the
+  // chunk it shows (alternating bit; stale acks ignored; no timeout). Verification pass only if all acked but no DONE.
+  var VERIFY_MS = 3000, SILENCE_WARN_MS = 5000, IDLE_WAKE_MS = 1000;
   function Scheduler(total, slots, periodMs, ackMode) {
     slots = Math.min(slots, total);
-    var acked = new Array(total).fill(false), ackedCount = 0, rounds = 0;
-    var cur = [], prev = [], shownAt = [], latency = INIT_LATENCY_MS, allAckedAt = -1, finished = false;
-    for (var k = 0; k < slots; k++) { cur.push(-1); prev.push(-1); shownAt.push(0); }
+    var acked = new Array(total).fill(false), ackedCount = 0, rounds = 0, goodAcks = 0, staleAcks = 0;
+    var cur = [], shownAt = [], latency = -1, allAckedAt = -1, lastAckAt = -1, finished = false;
+    for (var k = 0; k < slots; k++) { cur.push(-1); shownAt.push(0); }
     function first(s) { return slots === 1 ? 0 : s; }
     function count(s) { return Math.floor((total - first(s) + slots - 1) / slots); }
-    function show(s, i, now) { if (cur[s] >= 0) prev[s] = cur[s]; cur[s] = i; shownAt[s] = now; }
-    function next(s, from) {
-      var n = count(s), pos = from < 0 ? -1 : Math.floor((from - first(s)) / slots);
-      for (var k = 1; k <= n; k++) { var j = first(s) + ((pos + k) % n) * slots; if (!ackMode || !acked[j]) return j; }
-      return -1;
-    }
+    function show(s, i, now) { cur[s] = i; shownAt[s] = now; }
     function mark(i) { if (i >= 0 && !acked[i]) { acked[i] = true; ackedCount++; } }
-    function checkAll(now) { if (ackedCount === total && allAckedAt < 0) allAckedAt = now; return false; }
-    function timeoutMs() {
-      if (!ackMode) return periodMs;
-      var t = Math.round(2.5 * latency + 200);
-      return Math.max(Math.max(MIN_TIMEOUT_MS, periodMs), Math.min(MAX_TIMEOUT_MS, t));
-    }
-    var self = {
-      total: total, slots: slots, ackMode: ackMode,
+    return {
+      total: total, slots: slots, ackMode: ackMode, periodMs: periodMs,
       start: function (now) { for (var s = 0; s < slots; s++) show(s, first(s), now); },
       shown: function (s) { return s < slots ? cur[s] : -1; },
+      expectedTone: function (s) { return s < slots && cur[s] >= 0 ? toneOf(cur[s]) : -1; },
+      waitingMs: function (s, now) { return s < slots && cur[s] >= 0 ? now - shownAt[s] : -1; },
+      isAcked: function (i) { return acked[i]; },
       ackedCount: function () { return ackedCount; },
       rounds: function () { return rounds; },
+      goodAcks: function () { return goodAcks; },
+      staleAcks: function () { return staleAcks; },
       finished: function () { return finished; },
       latencyMs: function () { return Math.round(latency); },
-      timeoutMs: timeoutMs,
-      onAck: function (tone, now) {
+      silent: function (now) {
         if (!ackMode || finished) return false;
-        var s = slots === 1 ? 0 : tone;
-        if (s >= slots) return false;
-        if (cur[s] < 0) { if (prev[s] >= 0 && now - shownAt[s] < GUARD_MS) mark(prev[s]); return checkAll(now); }
-        var dt = now - shownAt[s];
-        if (dt < GUARD_MS && prev[s] >= 0) { mark(prev[s]); return checkAll(now); }
-        mark(cur[s]);
-        latency = latency * 0.7 + Math.min(dt, MAX_TIMEOUT_MS) * 0.3;
-        show(s, next(s, cur[s]), now);
-        checkAll(now);
-        return true;
+        for (var s = 0; s < slots; s++) if (cur[s] >= 0 && now - Math.max(shownAt[s], lastAckAt) >= SILENCE_WARN_MS) return true;
+        return false;
+      },
+      onAck: function (tone, now) {
+        if (!ackMode || finished || tone < 0 || tone > B1) return false;
+        for (var s = 0; s < slots; s++) {
+          if (cur[s] < 0 || toneOf(cur[s]) !== tone) continue;
+          mark(cur[s]);
+          goodAcks++;
+          var dt = now - shownAt[s];
+          latency = latency < 0 ? dt : latency * 0.7 + dt * 0.3;
+          lastAckAt = now;
+          var n = cur[s] + slots;
+          show(s, n < total ? n : -1, now);
+          if (ackedCount === total && allAckedAt < 0) allAckedAt = now;
+          return true;
+        }
+        staleAcks++;
+        return false;
       },
       onDone: function () { finished = true; },
       tick: function (now) {
         if (finished) return false;
-        var changed = false, s;
-        if (ackMode && ackedCount === total) {
-          if (allAckedAt < 0) allAckedAt = now;
-          if (now - allAckedAt >= VERIFY_MS) {
+        var s;
+        if (ackMode) {
+          if (ackedCount === total && allAckedAt >= 0 && now - allAckedAt >= VERIFY_MS) {
             acked.fill(false); ackedCount = 0; allAckedAt = -1; rounds++;
-            for (s = 0; s < slots; s++) show(s, next(s, cur[s] >= 0 ? cur[s] : -1), now);
+            for (s = 0; s < slots; s++) show(s, first(s), now);
             return true;
           }
+          return false;
         }
-        var t = timeoutMs();
+        var changed = false;
         for (s = 0; s < slots; s++) {
-          if (cur[s] < 0) { var n = ackMode ? next(s, -1) : -1; if (n >= 0) { show(s, n, now); changed = true; } continue; }
-          if (now - shownAt[s] >= t) { show(s, next(s, cur[s]), now); changed = true; }
+          if (now - shownAt[s] >= periodMs) { var n = cur[s] + slots; show(s, n < total ? n : first(s), now); changed = true; }
         }
         return changed;
       },
       nextDeadline: function (now) {
-        var t = timeoutMs(), d = now + Math.max(t, 50);
-        for (var s = 0; s < slots; s++) if (cur[s] >= 0) d = Math.min(d, shownAt[s] + t);
-        if (ackMode && allAckedAt >= 0) d = Math.min(d, allAckedAt + VERIFY_MS);
+        var d;
+        if (ackMode) d = allAckedAt >= 0 ? allAckedAt + VERIFY_MS : now + IDLE_WAKE_MS;
+        else { d = Infinity; for (var s = 0; s < slots; s++) d = Math.min(d, shownAt[s] + periodMs); }
         return Math.max(d, now + 10);
       },
       step: function (s, d, now) {
@@ -2564,11 +2606,11 @@ var QT1 = (function () {
         show(s, first(s) + pos * slots, now);
       }
     };
-    return self;
   }
 
   return { crc32: crc32, hex8: hex8, base45: base45, envelope: envelope, frames: frames, newId: newId, toneRatio: toneRatio,
-           A_HZ: A_HZ, B_HZ: B_HZ, DONE_HZ: DONE_HZ, Detector: Detector, Listener: Listener, Scheduler: Scheduler };
+           A0: A0, A1: A1, B0: B0, B1: B1, DONE: DONE, HZ: HZ, NAMES: NAMES, ACK_MS: ACK_MS, DONE_MS: DONE_MS, GAP_MS: GAP_MS,
+           toneOf: toneOf, classify: classify, Listener: Listener, Scheduler: Scheduler };
 })();
 if (typeof module !== "undefined") module.exports = QT1;
 </script>
@@ -2578,7 +2620,21 @@ if (typeof module !== "undefined") module.exports = QT1;
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var file = null, frames = [], running = false, paused = false, timer = null, sched = null, mic = null, ackMode = false;
-  var canvases = [$("qrA"), $("qrB")], drawn = [-2, -2];
+  var canvases = [$("qrA"), $("qrB")], drawn = [-2, -2], loopReason = "", lastHeard = -1, lastHeardOk = false, lastHeardAt = -1e9;
+  var lampAt = [-1e9, -1e9, -1e9, -1e9, -1e9], lampOk = [false, false, false, false, false], uiTimer = null;
+  // read-only hook for automated tests (tools/test-web-chrome.py): display log + state snapshot
+  var testLog = [];
+  window.__qtSender = {
+    log: testLog,
+    state: function () {
+      return { running: running, ackMode: ackMode, mode: ackMode ? "ack" : (sched ? "loop" : ""), loopReason: loopReason,
+               total: frames.length, slots: sched ? sched.slots : 0,
+               shown: sched ? [sched.shown(0), sched.shown(1)] : [-1, -1],
+               expected: sched ? [sched.expectedTone(0), sched.expectedTone(1)] : [-1, -1],
+               acked: sched ? sched.ackedCount() : 0, good: sched ? sched.goodAcks() : 0, stale: sched ? sched.staleAcks() : 0,
+               finished: sched ? sched.finished() : false, frames: frames.slice() };
+    }
+  };
 
   function setStatus(s) { $("status").textContent = s; }
   function readFile(f) {
@@ -2613,15 +2669,50 @@ if (typeof module !== "undefined") module.exports = QT1;
       var i = sched.shown(s);
       if (i !== drawn[s]) {
         drawn[s] = i;
+        testLog.push({ t: Math.round(performance.now()), slot: s, show: i, acked: sched.ackedCount(), mode: ackMode ? "ack" : "loop" });
         if (i < 0) { var g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height); cv.classList.add("idle"); }
         else { drawCode(cv, frames[i]); cv.classList.remove("idle"); }
       }
       parts.push((sched.slots === 2 ? (s === 0 ? "A " : "B ") : "") + (i < 0 ? "✓" : i + 1));
     }
     var line = parts.join("   ") + " / " + frames.length + "   v" + version + "   " + frames[0].slice(4, 12);
-    if (ackMode) line += "   ✓" + sched.ackedCount() + "  " + sched.latencyMs() + "ms";
+    if (ackMode) line += "   ✓" + sched.ackedCount() + (sched.latencyMs() >= 0 ? "  " + sched.latencyMs() + "ms" : "");
     if (sched.rounds() > 0) line += "   R" + (sched.rounds() + 1);
     $("info").textContent = line;
+    renderState();
+  }
+  /** mode badge, per-slot state, tone lamps, mic level, silence hint */
+  function renderState() {
+    var now = performance.now(), badge = $("mode");
+    if (!sched) { badge.textContent = ""; badge.className = ""; return; }
+    if (ackMode) { badge.textContent = "🎤 マイク確認モード / MIC-ACK mode — 確認音を聞いたコードだけ進む / advances only on its ack"; badge.className = "ack"; }
+    else { badge.textContent = "🔁 ループモード / LOOP mode — " + Math.round(sched.periodMs) + " ms/code, 確認音なし / no acks" + (loopReason ? " (" + loopReason + ")" : ""); badge.className = "loop"; }
+    var html = "";
+    for (var s = 0; s < sched.slots; s++) {
+      var i = sched.shown(s), label = sched.slots === 2 ? (s === 0 ? "A (左/上)" : "B (右/下)") : "code";
+      if (!ackMode) html += "<div>" + label + ": #" + (i + 1) + "</div>";
+      else if (i < 0) html += "<div>" + label + ": すべて確認済み / all acked ✓</div>";
+      else html += "<div>" + label + ": #" + (i + 1) + " — <b>" + QT1.NAMES[sched.expectedTone(s)] + "</b> 待ち / waiting " +
+        (sched.waitingMs(s, now) / 1000).toFixed(1) + " s</div>";
+    }
+    $("slots").innerHTML = html;
+    var live = mic ? mic.listener.lastClass : -1;
+    for (var k = 0; k < 5; k++) {
+      var el = $("lamp" + k), exp = false;
+      for (var s2 = 0; s2 < sched.slots; s2++) if (sched.expectedTone(s2) === k) exp = true;
+      var cls = "lamp";
+      if (now - lampAt[k] < 400) cls += lampOk[k] ? " ok" : " stale";
+      else if (live === k) cls += " live";
+      if (exp) cls += " exp";
+      el.className = cls;
+    }
+    var db = mic ? Math.round(20 * Math.log10(Math.max(mic.listener.lastRms, 1e-5))) : null;
+    $("meter").textContent = mic ? "mic " + db + " dBFS" : "mic —";
+    $("meterbar").style.width = mic ? Math.max(0, Math.min(100, (db + 80) * 1.25)) + "%" : "0";
+    $("counts").textContent = ackMode ? "✓" + sched.goodAcks() + " 一致 / matched   ✗" + sched.staleAcks() + " 古い・無関係 / stale ignored" +
+      (lastHeard >= 0 && now - lastHeardAt < 3000 ? "   last: " + QT1.NAMES[lastHeard] + (lastHeardOk ? " ✓" : " (stale)") : "") : "";
+    $("hint").textContent = ackMode && sched.silent(now) ? "⚠ しばらく確認音が届きません — 表示を続けています (飛ばしません)。受信側の音量・向きを確認 / no matching ack for a while — still showing, nothing skipped; check the receiver's volume and aim" : "";
+    $("toloop").style.display = ackMode && running ? "" : "none";
   }
   function schedule() {
     clearTimeout(timer);
@@ -2633,21 +2724,32 @@ if (typeof module !== "undefined") module.exports = QT1;
       schedule();
     }, Math.max(10, sched.nextDeadline(now) - now));
   }
-  function onAck(slot) {
+  function onTone(tone) {
+    var now = performance.now();
+    lampAt[tone] = now;
+    if (tone === QT1.DONE) { lampOk[tone] = true; onDone(); return; }
     if (!running || paused || !sched) return;
-    if (sched.onAck(slot, performance.now())) render();
+    var ok = sched.onAck(tone, now);
+    lampOk[tone] = ok; lastHeard = tone; lastHeardOk = ok; lastHeardAt = now;
+    testLog.push({ t: Math.round(now), heard: QT1.NAMES[tone], ok: ok });
+    if (ok) render(); else renderState();
     schedule();
   }
-  function onDone() { if (running) { if (sched) sched.onDone(); stop(); setStatus("受信完了 (完了音を検出) / receiver finished ✓"); } }
+  function onDone() {
+    if (!running) return;
+    if (sched) sched.onDone();
+    testLog.push({ t: Math.round(performance.now()), done: true });
+    stop(); setStatus("受信完了 (完了音を検出) / receiver finished ✓");
+  }
 
-  /** microphone → 16 ms blocks → Goertzel detectors for A / B / DONE */
+  /** microphone → 16 ms blocks → 5-tone Goertzel detector (A0/A1/B0/B1/DONE) */
   async function startMic() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("getUserMedia unavailable");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { var err = new Error("getUserMedia unavailable"); err.name = "NotSupported"; throw err; }
     var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     var ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") { try { await ctx.resume(); } catch (e) { /* resumed by the click */ } }
     var src = ctx.createMediaStreamSource(stream), listener = new QT1.Listener(ctx.sampleRate), node, iv = null;
-    var handle = function (ev) { ev.forEach(function (e) { if (e === "A") onAck(0); else if (e === "B") onAck(1); else onDone(); }); };
+    var handle = function (ev) { ev.forEach(onTone); };
     if (ctx.createScriptProcessor) {
       // contiguous samples (no gaps), unlike polling an AnalyserNode
       node = ctx.createScriptProcessor(2048, 1, 1);
@@ -2660,9 +2762,20 @@ if (typeof module !== "undefined") module.exports = QT1;
       var buf = new Float32Array(listener.block);
       iv = setInterval(function () { node.getFloatTimeDomainData(buf); handle(listener.feed(buf)); }, 16);
     }
-    return { stop: function () { if (iv) clearInterval(iv); try { node.disconnect(); } catch (e) { /* already */ }
+    stream.getTracks().forEach(function (t) { t.addEventListener("ended", function () { micLost("マイクが停止 / mic ended"); }); });
+    return { listener: listener, stop: function () { if (iv) clearInterval(iv); try { node.disconnect(); } catch (e) { /* already */ }
       stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close(); } };
   }
+  /** mic gone (unplugged, revoked) or the user chose loop: switch to the timed loop, clearly flagged */
+  function toLoop(reason) {
+    if (!running || !ackMode) return;
+    if (mic) { mic.stop(); mic = null; }
+    ackMode = false; loopReason = reason;
+    sched = QT1.Scheduler(frames.length, sched.slots, sched.periodMs, false);
+    drawn = [-2, -2]; sched.start(performance.now());
+    render(); schedule();
+  }
+  function micLost(reason) { toLoop(reason); }
 
   async function start() {
     var name, isFile, data;
@@ -2670,11 +2783,11 @@ if (typeof module !== "undefined") module.exports = QT1;
     else { isFile = false; name = ""; data = new TextEncoder().encode($("text").value); }
     if (!data.length) { setStatus("送るデータがありません / nothing to send"); return; }
     frames = await QT1.frames(QT1.newId(), isFile, name, data, Number($("chunk").value), true);
-    ackMode = $("ack").checked; running = true; paused = false;
-    var note = "";
+    ackMode = $("ack").checked; running = true; paused = false; loopReason = ackMode ? "" : "マイク設定オフ / mic option off";
+    lastHeard = -1; testLog.length = 0;
     if (ackMode) {
       try { mic = await startMic(); }
-      catch (e) { ackMode = false; mic = null; note = "  (マイク使用不可、ループ送信 / mic unavailable, looping: " + (e.name || e.message) + ")"; }
+      catch (e) { ackMode = false; mic = null; loopReason = "マイク使用不可 / mic unavailable: " + (e.name || e.message); }
     }
     sched = QT1.Scheduler(frames.length, $("two").checked ? 2 : 1, 1000 / Number($("fps").value), ackMode);
     drawn = [-2, -2];
@@ -2682,9 +2795,9 @@ if (typeof module !== "undefined") module.exports = QT1;
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = false; });
     $("start").disabled = true;
     document.body.classList.add("running");
-    setStatus("送信中 / sending: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]
-      + (ackMode ? "  🎤" : "") + note);
+    setStatus("送信中 / sending: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]);
     render(); schedule();
+    clearInterval(uiTimer); uiTimer = setInterval(renderState, 100);
   }
   function stop() {
     running = false; clearTimeout(timer);
@@ -2692,6 +2805,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = true; });
     $("start").disabled = false;
     document.body.classList.remove("running");
+    renderState(); clearInterval(uiTimer);
     if (!/✓/.test($("status").textContent)) setStatus("停止 / stopped");
   }
   function step(d) {
@@ -2702,6 +2816,7 @@ if (typeof module !== "undefined") module.exports = QT1;
   }
   $("start").onclick = function () { setStatus("準備中 / preparing…"); start().catch(function (e) { setStatus("エラー: " + e); }); };
   $("stop").onclick = stop;
+  $("toloop").onclick = function () { toLoop("手動で切替 / switched by user"); };
   $("pause").onclick = function () { paused = !paused; this.textContent = paused ? "▶" : "⏸"; schedule(); };
   $("prev").onclick = function () { step(-1); };
   $("next").onclick = function () { step(1); };

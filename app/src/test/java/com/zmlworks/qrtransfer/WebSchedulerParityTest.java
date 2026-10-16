@@ -17,7 +17,7 @@ public class WebSchedulerParityTest {
         assertTrue("run node tools/test-web.js first", in != null);
         SlotScheduler s = null;
         long t = 0;
-        int lines = 0, scheds = 0;
+        int lines = 0, scheds = 0, good = 0;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             for (String line; (line = r.readLine()) != null; ) {
                 if (line.isEmpty()) continue;
@@ -36,13 +36,16 @@ public class WebSchedulerParityTest {
                     default: t = Long.parseLong(p[3]); s.step(Integer.parseInt(p[1]), Integer.parseInt(p[2]), t); got = ""; break;
                 }
                 if (!got.isEmpty()) assertEquals(line, p[arrow - 1], got);
-                String state = s.shown(0) + " " + s.shown(1) + " " + s.ackedCount() + " " + s.rounds() + " " + s.timeoutMs()
-                        + " " + s.nextDeadline(t);
+                if (p[0].equals("ack") && got.equals("1")) good++;
+                String state = s.shown(0) + " " + s.shown(1) + " " + s.expectedTone(0) + " " + s.expectedTone(1) + " "
+                        + s.ackedCount() + " " + s.rounds() + " " + s.goodAcks() + " " + s.staleAcks() + " " + s.latencyMs()
+                        + " " + (s.silent(t) ? 1 : 0) + " " + s.nextDeadline(t);
                 assertEquals(line, String.join(" ", java.util.Arrays.copyOfRange(p, arrow + 1, p.length)), state);
                 lines++;
             }
         }
-        assertEquals(5, scheds);
-        assertTrue(lines > 1500);
+        assertEquals(6, scheds);
+        assertTrue(lines > 2000);
+        assertTrue("script exercises matching acks", good > 50);
     }
 }

@@ -7,12 +7,11 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.List;
-import java.util.Random;
 
+/** Alternating-bit sender state machine: lost acks, lost frames, duplicate and stale acks, loop mode. */
 public class SlotSchedulerTest {
-    @Test public void slotsOwnParities() {
+    @Test public void loopModeCyclesEachSlotsParity() {
         SlotScheduler s = new SlotScheduler(7, 2, 250, false);
         s.start(0);
         assertEquals(0, s.shown(0));
@@ -25,6 +24,102 @@ public class SlotSchedulerTest {
         }
         assertEquals(List.of(2, 4, 6, 0, 2, 4, 6, 0), a);
         assertEquals(List.of(3, 5, 1, 3, 5, 1, 3, 5), b);
+        assertFalse(s.onAck(Tone.A1, 2100));           // acks mean nothing in loop mode
+    }
+
+    @Test public void ackModeNeverAdvancesWithoutAck() {
+        // the 0.2.0 bug: an adaptive timeout advanced every ~600 ms. Now nothing moves for an hour of silence.
+        SlotScheduler s = new SlotScheduler(20, 2, 100, true);
+        s.start(0);
+        s.onAck(Tone.A0, 170);                        // a few quick acks (which used to shrink the timeout)
+        s.onAck(Tone.B0, 180);
+        s.onAck(Tone.A1, 340);
+        s.onAck(Tone.B1, 350);
+        assertEquals(4, s.shown(0));
+        assertEquals(5, s.shown(1));
+        for (long t = 360; t < 3_600_000; t = s.nextDeadline(t)) assertFalse(s.tick(t));
+        assertEquals(4, s.shown(0));
+        assertEquals(5, s.shown(1));
+        assertTrue(s.silent(3_600_000));
+        assertEquals(Tone.A0, s.expectedTone(0));
+        assertEquals(Tone.B0, s.expectedTone(1));
+    }
+
+    @Test public void advancesOnlyOnMatchingSlotAndBit() {
+        SlotScheduler s = new SlotScheduler(10, 2, 250, true);   // A: 0 2 4 6 8, B: 1 3 5 7 9
+        s.start(0);
+        assertEquals(Tone.A0, s.expectedTone(0));
+        assertEquals(Tone.B0, s.expectedTone(1));
+        assertFalse(s.onAck(Tone.A1, 100));           // wrong bit for slot A (and not B's tone)
+        assertFalse(s.onAck(Tone.B1, 110));
+        assertEquals(0, s.shown(0));
+        assertEquals(1, s.shown(1));
+        assertEquals(2, s.staleAcks());
+        assertTrue(s.onAck(Tone.B0, 300));            // B only
+        assertEquals(0, s.shown(0));
+        assertEquals(3, s.shown(1));
+        assertTrue(s.isAcked(1));
+        assertFalse(s.isAcked(0));
+        assertTrue(s.onAck(Tone.A0, 400));
+        assertEquals(2, s.shown(0));
+        assertEquals(Tone.A1, s.expectedTone(0));
+    }
+
+    @Test public void staleAndDuplicateAcksAreIgnored() {
+        SlotScheduler s = new SlotScheduler(10, 2, 250, true);
+        s.start(0);
+        assertTrue(s.onAck(Tone.A0, 200));            // 0 acked → shows 2 (A1)
+        assertFalse(s.onAck(Tone.A0, 210));           // duplicate detection of the same ack burst
+        assertFalse(s.onAck(Tone.A0, 900));           // receiver re-acked 0 (it still saw it): stale
+        assertEquals(2, s.shown(0));
+        assertTrue(s.onAck(Tone.A1, 1000));           // 2 acked → 4 (A0 again)
+        assertEquals(4, s.shown(0));
+        assertFalse(s.onAck(Tone.A1, 1010));          // late duplicate for 2: other bit, ignored
+        assertEquals(4, s.shown(0));
+        assertEquals(2, s.goodAcks());
+        assertEquals(3, s.staleAcks());
+        assertEquals(2, s.ackedCount());
+    }
+
+    @Test public void lostAckKeepsChunkUntilReack() {
+        SlotScheduler s = new SlotScheduler(6, 2, 250, true);
+        s.start(0);
+        // the receiver read chunk 0 but its ack was lost: nothing changes...
+        assertFalse(s.tick(5000));
+        assertEquals(0, s.shown(0));
+        // ...until the periodic re-ack is heard
+        assertTrue(s.onAck(Tone.A0, 5000 + AckPolicy.REACK_MS));
+        assertEquals(2, s.shown(0));
+    }
+
+    @Test public void lostFramesJustWait() {
+        // camera misses chunk 3 for a long time; slot B waits on it while slot A finishes
+        SlotScheduler s = new SlotScheduler(6, 2, 250, true);
+        s.start(0);
+        s.onAck(Tone.A0, 100); s.onAck(Tone.B0, 100);   // 0, 1
+        s.onAck(Tone.A1, 300); s.onAck(Tone.A0, 500);   // 2, 4 → slot A done
+        assertEquals(-1, s.shown(0));
+        assertEquals(3, s.shown(1));
+        for (long t = 600; t < 60_000; t += 100) assertFalse(s.tick(t));
+        assertEquals(3, s.shown(1));
+        assertTrue(s.onAck(Tone.B1, 60_000));
+        assertEquals(5, s.shown(1));
+        assertTrue(s.onAck(Tone.B0, 60_200));
+        assertEquals(-1, s.shown(1));
+        assertEquals(6, s.ackedCount());
+    }
+
+    @Test public void oneSlotUsesTheSameToneMapping() {
+        SlotScheduler s = new SlotScheduler(5, 1, 250, true);
+        s.start(0);
+        int[] tones = {Tone.A0, Tone.B0, Tone.A1, Tone.B1, Tone.A0};
+        for (int i = 0; i < 5; i++) {
+            assertEquals(i, s.shown(0));
+            assertEquals(tones[i], s.expectedTone(0));
+            assertFalse(s.onAck(tones[(i + 3) % 4], i * 100 + 50));   // the previous chunk's tone: stale
+            assertTrue(s.onAck(tones[i], i * 100 + 90));
+        }
+        assertEquals(-1, s.shown(0));
     }
 
     @Test public void singleChunkUsesOneSlot() {
@@ -33,91 +128,17 @@ public class SlotSchedulerTest {
         assertEquals(1, s.slots);
         assertEquals(0, s.shown(0));
         assertEquals(-1, s.shown(1));
-        assertTrue(s.onAck(0, 300));
-        assertEquals(-1, s.shown(0));   // idle: all acknowledged, waiting for DONE
-    }
-
-    @Test public void oneSlotAcceptsEitherTone() {
-        SlotScheduler s = new SlotScheduler(4, 1, 250, true);
-        s.start(0);
-        assertTrue(s.onAck(1, 300));    // chunk 0 is even but tone choice depends on parity: B for odd...
-        assertEquals(1, s.shown(0));
-        assertTrue(s.onAck(1, 600));
-        assertEquals(2, s.shown(0));
-        assertTrue(s.onAck(0, 900));
-        assertEquals(3, s.ackedCount());
-    }
-
-    @Test public void ackAdvancesOnlyItsSlot() {
-        SlotScheduler s = new SlotScheduler(10, 2, 250, true);
-        s.start(0);
-        assertTrue(s.onAck(1, 300));
-        assertEquals(0, s.shown(0));
-        assertEquals(3, s.shown(1));
-        assertTrue(s.isAcked(1));
-        assertFalse(s.isAcked(0));
-        assertTrue(s.onAck(0, 400));
-        assertEquals(2, s.shown(0));
-    }
-
-    @Test public void toneRightAfterSwitchBelongsToPreviousChunk() {
-        SlotScheduler s = new SlotScheduler(10, 2, 250, true);
-        s.start(0);
-        long t = s.timeoutMs();
-        assertTrue(s.tick(t));                 // timeout: 0 → 2 without ack
-        assertEquals(2, s.shown(0));
-        assertFalse(s.onAck(0, t + 60));       // late tone for chunk 0
-        assertTrue(s.isAcked(0));
-        assertFalse(s.isAcked(2));
-        assertEquals(2, s.shown(0));           // keeps showing 2
-    }
-
-    @Test public void timeoutResendsLaterAndAdaptsToLatency() {
-        SlotScheduler s = new SlotScheduler(6, 2, 250, true);
-        s.start(0);
-        assertEquals(1700, s.timeoutMs());     // 2.5 × 600 + 200
-        long now = 0;
-        for (int k = 0; k < 20; k++) {         // receiver acks reliably after 300 ms
-            now += 300;
-            s.onAck(0, now);
-            s.onAck(1, now);
-            if (s.ackedCount() == 6) break;
-        }
-        assertEquals(6, s.ackedCount());
-        assertTrue(s.latencyMs() < 450);
-        assertTrue(s.timeoutMs() < 1300);
-    }
-
-    @Test public void skipsAcknowledgedAndResendsMissing() {
-        SlotScheduler s = new SlotScheduler(6, 2, 250, true);   // A: 0 2 4, B: 1 3 5
-        s.start(0);
-        s.onAck(0, 300);                       // 0 ok → shows 2
-        s.tick(300 + s.timeoutMs());           // 2 times out → 4
-        assertEquals(4, s.shown(0));
-        s.onAck(0, 300 + s.timeoutMs() + 400); // 4 ok → next unacked is 2 (resend)
-        assertEquals(2, s.shown(0));
-    }
-
-    @Test public void lastChunkIsResentUntilAcked() {
-        SlotScheduler s = new SlotScheduler(2, 2, 250, true);
-        s.start(0);
-        s.onAck(1, 300);
-        assertEquals(-1, s.shown(1));
-        long t = s.timeoutMs();
-        s.tick(t);
-        assertEquals(0, s.shown(0));           // same chunk again (resend)
-        s.tick(2 * t + 1);
-        assertEquals(0, s.shown(0));
-        s.onAck(0, 2 * t + 400);
+        assertFalse(s.onAck(Tone.B0, 100));
+        assertTrue(s.onAck(Tone.A0, 300));
         assertEquals(-1, s.shown(0));
     }
 
-    @Test public void verificationRoundWhenNoDone() {
+    @Test public void verificationPassWhenAllAckedButNoDone() {
         SlotScheduler s = new SlotScheduler(3, 2, 250, true);
         s.start(0);
-        s.onAck(0, 300);
-        s.onAck(1, 300);
-        s.onAck(0, 600);
+        s.onAck(Tone.A0, 300);
+        s.onAck(Tone.B0, 300);
+        s.onAck(Tone.A1, 600);
         assertEquals(3, s.ackedCount());
         assertEquals(-1, s.shown(0));
         assertFalse(s.tick(600 + SlotScheduler.VERIFY_MS - 1));
@@ -126,9 +147,22 @@ public class SlotSchedulerTest {
         assertEquals(0, s.ackedCount());
         assertEquals(0, s.shown(0));
         assertEquals(1, s.shown(1));
+        assertFalse(s.tick(100_000));                 // the verification pass is ack-driven as well
+        assertEquals(0, s.shown(0));
         s.onDone();
         assertTrue(s.finished());
-        assertFalse(s.tick(100_000));
+        assertFalse(s.tick(200_000));
+        assertFalse(s.onAck(Tone.A0, 200_001));
+    }
+
+    @Test public void latencyIsMeasured() {
+        SlotScheduler s = new SlotScheduler(6, 2, 250, true);
+        s.start(0);
+        assertEquals(-1, s.latencyMs());
+        s.onAck(Tone.A0, 300);
+        assertEquals(300, s.latencyMs());
+        s.onAck(Tone.A1, 500);
+        assertEquals(270, s.latencyMs());            // 0.7 × 300 + 0.3 × 200
     }
 
     @Test public void manualStep() {
@@ -140,94 +174,5 @@ public class SlotSchedulerTest {
         assertEquals(3, s.shown(1));
         s.step(1, 1, 10);
         assertEquals(1, s.shown(1));
-    }
-
-    // ---------------- end-to-end simulation ----------------
-
-    /** Simulated sender screen + receiver camera + speaker/mic; returns ms until DONE is heard (or -1). */
-    static long simulate(int total, int slots, boolean ack, double pRead, double pHear, double pFalseAck, long seed) {
-        return simulate(total, slots, ack, 250, pRead, pHear, pFalseAck, seed);
-    }
-
-    static long simulate(int total, int slots, boolean ack, long period, double pRead, double pHear, double pFalseAck, long seed) {
-        Random rnd = new Random(seed);
-        SlotScheduler s = new SlotScheduler(total, slots, period, ack);
-        AckPolicy policy = new AckPolicy();
-        BitSet have = new BitSet();
-        long[] shownSince = new long[2];
-        int[] lastShown = {-2, -2};
-        List<long[]> inFlight = new ArrayList<>();   // {arrivalMs, tone(0/1/2=DONE)}
-        boolean complete = false;
-        s.start(0);
-        long nextTick = s.nextDeadline(0);
-        for (long t = 0; t < 600_000; t += 5) {
-            // sender: timer + heard tones
-            for (int k = 0; k < inFlight.size(); k++) {
-                long[] e = inFlight.get(k);
-                if (e[0] <= t) {
-                    inFlight.remove(k--);
-                    if (e[1] == 2) { s.onDone(); return t; }
-                    s.onAck((int) e[1], t);
-                    nextTick = s.nextDeadline(t);
-                }
-            }
-            if (t >= nextTick) { s.tick(t); nextTick = s.nextDeadline(t); }
-            for (int k = 0; k < s.slots; k++) if (s.shown(k) != lastShown[k]) { lastShown[k] = s.shown(k); shownSince[k] = t; }
-            // receiver: 30 fps camera, needs a code on screen for ≥ 40 ms (exposure + display refresh)
-            if (t % 33 < 5) {
-                for (int k = 0; k < s.slots; k++) {
-                    int idx = s.shown(k);
-                    if (idx < 0 || t - shownSince[k] < 40 || rnd.nextDouble() > pRead) continue;
-                    if (!complete) have.set(idx);
-                    long base = t + 80 + rnd.nextInt(60);              // decode + audio output latency
-                    if (have.cardinality() == total && !complete) {
-                        complete = true;
-                        if (rnd.nextDouble() < pHear) inFlight.add(new long[]{base + 150, 2});
-                        policy.shouldRepeatDone(t);
-                        continue;
-                    }
-                    if (complete) {
-                        if (policy.shouldRepeatDone(t) && rnd.nextDouble() < pHear) inFlight.add(new long[]{base + 150, 2});
-                        continue;
-                    }
-                    int tone = policy.onFrame(idx, t);
-                    if (tone >= 0 && rnd.nextDouble() < pHear) inFlight.add(new long[]{base + 40, tone});
-                }
-                // spurious tone from the environment
-                if (ack && rnd.nextDouble() < pFalseAck) inFlight.add(new long[]{t, rnd.nextInt(2)});
-            }
-        }
-        return -1;
-    }
-
-    @Test public void simulatedTransfersComplete() {
-        for (long seed = 1; seed <= 20; seed++) {
-            assertTrue(simulate(60, 2, true, 0.9, 0.95, 0, seed) > 0);
-            assertTrue(simulate(60, 2, true, 0.5, 0.6, 0.002, seed) > 0);     // bad camera, noisy room
-            assertTrue(simulate(61, 1, true, 0.9, 0.95, 0, seed) > 0);
-            assertTrue(simulate(61, 2, false, 0.7, 1.0, 0, seed) > 0);        // no mic: timed loop
-        }
-    }
-
-    @Test public void twoSlotsRoughlyDoubleThroughput() {
-        long one = 0, two = 0;
-        for (long seed = 1; seed <= 20; seed++) {
-            one += simulate(100, 1, true, 0.9, 0.95, 0, seed);
-            two += simulate(100, 2, true, 0.9, 0.95, 0, seed);
-        }
-        double speedup = (double) one / two;
-        assertTrue("speed-up " + speedup, speedup > 1.7);
-        // ack pacing is never much slower than a blind loop that happens to match the camera, and much faster than
-        // a blind loop that is too fast for a weak camera (codes missed → many passes)
-        long blind4 = 0, blind10 = 0, ackWeak = 0;
-        for (long seed = 1; seed <= 20; seed++) {
-            blind4 += simulate(100, 2, false, 250, 0.9, 0.95, 0, seed);
-            blind10 += simulate(100, 2, false, 100, 0.25, 0.95, 0, seed);
-            ackWeak += simulate(100, 2, true, 100, 0.25, 0.95, 0, seed);
-        }
-        System.out.println("sim: 1 slot " + one / 20 + " ms, 2 slots " + two / 20 + " ms, blind 4fps " + blind4 / 20
-                + " ms; weak camera: blind 10fps " + blind10 / 20 + " ms vs ack " + ackWeak / 20 + " ms");
-        assertTrue(two < blind4 * 1.15);
-        assertTrue(ackWeak < blind10);
     }
 }

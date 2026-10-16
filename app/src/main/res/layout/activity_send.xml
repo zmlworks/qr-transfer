@@ -78,6 +78,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:buttonTint="@color/hi"
+                android:checked="true"
                 android:text="@string/ack_mode" />
 
             <CheckBox
@@ -147,6 +148,17 @@
             android:fontFamily="monospace"
             android:gravity="center"
             android:padding="6dp" />
+
+        <!-- mode (MIC/ACK or LOOP), per-slot state, live detected tone -->
+        <TextView
+            android:id="@+id/ack_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:paddingHorizontal="6dp"
+            android:textColor="@color/dim"
+            android:textSize="12sp" />
 
         <LinearLayout
             android:layout_width="match_parent"

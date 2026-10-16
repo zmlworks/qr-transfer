@@ -40,9 +40,10 @@ import java.util.Locale;
 
 /**
  * Sender: text or file -> QT1 frames -> animated QR codes, two at a time (slot A: even chunks, slot B: odd chunks).
- * Without the microphone both codes loop. With "advance on tone" each slot advances when the receiver's tone for it
- * is heard (or after an adaptive timeout), skips confirmed chunks, and the transfer stops on the DONE tone.
- * Pacing logic: {@link SlotScheduler}.
+ * With "advance on tones" (microphone) each slot advances ONLY when the receiver's alternating-bit ack for exactly the
+ * shown chunk is heard (no timeout; stale acks are ignored) and the transfer stops on the DONE tone. Only when the
+ * microphone is refused or unavailable do both codes loop. The active mode, per-slot state and the live detected tone
+ * are shown under the codes. Pacing logic: {@link SlotScheduler}.
  */
 public final class SendActivity extends Activity implements AckListener.Callback {
     private static final int REQ_PICK = 1, REQ_MIC = 2;
@@ -53,7 +54,7 @@ public final class SendActivity extends Activity implements AckListener.Callback
 
     private View setup, show;
     private EditText text;
-    private TextView fileInfo, info;
+    private TextView fileInfo, info, ackState;
     private Spinner chunk, fps, ecc;
     private CheckBox ackBox, twoBox;
     private LinearLayout qrs;
@@ -74,6 +75,9 @@ public final class SendActivity extends Activity implements AckListener.Callback
     private long periodMs;
     private ErrorCorrectionLevel ecl;
     private AckListener listener;
+    private String loopReason;   // why loop mode is active (null in ack mode)
+    private int lastHeard = -1, lastHeardStale;
+    private long lastHeardAt;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -84,6 +88,7 @@ public final class SendActivity extends Activity implements AckListener.Callback
         text = findViewById(R.id.text);
         fileInfo = findViewById(R.id.file_info);
         info = findViewById(R.id.info);
+        ackState = findViewById(R.id.ack_state);
         chunk = findViewById(R.id.chunk);
         fps = findViewById(R.id.fps);
         ecc = findViewById(R.id.ecc);
@@ -164,17 +169,17 @@ public final class SendActivity extends Activity implements AckListener.Callback
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
             return;
         }
-        startSending(ackBox.isChecked());
+        startSending(ackBox.isChecked(), ackBox.isChecked() ? null : getString(R.string.loop_reason_off));
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] p, int[] r) {
         if (req != REQ_MIC) return;
         boolean ok = r.length > 0 && r[0] == PackageManager.PERMISSION_GRANTED;
-        if (!ok) { toast(getString(R.string.mic_denied)); ackBox.setChecked(false); }
-        startSending(ok);
+        if (!ok) toast(getString(R.string.mic_denied));
+        startSending(ok, ok ? null : getString(R.string.loop_reason_denied));
     }
 
-    private void startSending(boolean withAck) {
+    private void startSending(boolean withAck, String reason) {
         final Protocol.Content c = fileData != null ? new Protocol.Content(true, fileName, fileData)
                 : new Protocol.Content(false, "", text.getText().toString().getBytes(StandardCharsets.UTF_8));
         if (c.data.length == 0) { toast(getString(R.string.nothing)); return; }
@@ -196,17 +201,66 @@ public final class SendActivity extends Activity implements AckListener.Callback
             frames = Protocol.frames(Protocol.newId(), c, chunkBytes, true);
             sending = true;
             ackMode = false;
+            loopReason = reason;
+            lastHeard = -1;
             if (withAck) {
                 listener = new AckListener(this);
                 ackMode = listener.start();
-                if (!ackMode) { listener = null; ui.post(() -> toast(getString(R.string.mic_failed))); }
+                if (!ackMode) {
+                    listener = null;
+                    loopReason = getString(R.string.loop_reason_failed);
+                    ui.post(() -> toast(getString(R.string.mic_failed)));
+                } else loopReason = null;
             }
             sched = new SlotScheduler(frames.size(), slots, periodMs, ackMode);
             drawn[0] = drawn[1] = -2;
             sched.start(SystemClock.uptimeMillis());
             render();
             schedule();
+            ui.post(() -> { ui.removeCallbacks(statusLoop); ui.post(statusLoop); });
         });
+    }
+
+    /** live mode / per-slot / detected-tone indicator, refreshed 10×/s on the UI thread */
+    private final Runnable statusLoop = new Runnable() {
+        @Override public void run() {
+            if (show.getVisibility() != View.VISIBLE) return;
+            worker.post(() -> {
+                final String s = statusText();
+                ui.post(() -> ackState.setText(s));
+            });
+            ui.postDelayed(this, 100);
+        }
+    };
+
+    /** worker thread */
+    private String statusText() {
+        if (!sending || sched == null) return "";
+        long now = SystemClock.uptimeMillis();
+        StringBuilder b = new StringBuilder();
+        if (!ackMode) {
+            b.append(getString(R.string.mode_loop, sched.periodMs));
+            if (loopReason != null) b.append(" — ").append(loopReason);
+            return b.toString();
+        }
+        b.append(getString(R.string.mode_ack));
+        for (int s = 0; s < sched.slots; s++) {
+            b.append('\n').append(sched.slots == 2 ? (s == 0 ? "A: " : "B: ") : "");
+            int i = sched.shown(s);
+            if (i < 0) { b.append(getString(R.string.slot_idle)); continue; }
+            b.append(getString(R.string.slot_wait, i + 1, Tone.NAMES[sched.expectedTone(s)],
+                    sched.waitingMs(s, now) / 1000.0));
+        }
+        AckListener l = listener;
+        int live = l != null ? l.liveTone : -1;
+        double rms = l != null ? l.liveRms : 0;
+        b.append('\n').append(String.format(Locale.ROOT, "🎤 %s  %d dBFS", live >= 0 ? "♪" + Tone.NAMES[live] : "·",
+                Math.round(20 * Math.log10(Math.max(rms, 1e-5)))));
+        if (lastHeard >= 0 && now - lastHeardAt < 3000)
+            b.append("   ").append(getString(lastHeardStale == 1 ? R.string.heard_stale : R.string.heard_ok, Tone.NAMES[lastHeard]));
+        b.append(String.format(Locale.ROOT, "   ✓%d  ✗%d", sched.goodAcks(), sched.staleAcks()));
+        if (sched.silent(now)) b.append('\n').append(getString(R.string.silence_hint));
+        return b.toString();
     }
 
     private void stopSending() {
@@ -282,7 +336,8 @@ public final class SendActivity extends Activity implements AckListener.Callback
         line.append(" / ").append(frames.size());
         if (version > 0) line.append("  ·  v").append(version);
         line.append("  ·  ").append(frames.get(0).substring(4, 12));
-        if (ackMode) line.append(String.format(Locale.ROOT, "  ·  ✓%d  %dms", sched.ackedCount(), sched.latencyMs()));
+        if (ackMode) line.append(String.format(Locale.ROOT, "  ·  ✓%d", sched.ackedCount()))
+                .append(sched.latencyMs() >= 0 ? "  " + sched.latencyMs() + "ms" : "");
         if (sched.rounds() > 0) line.append("  ·  R").append(sched.rounds() + 1);
         final String text = line.toString();
         final int slots = sched.slots;
@@ -326,13 +381,33 @@ public final class SendActivity extends Activity implements AckListener.Callback
     }
 
     // AckListener callbacks (listener thread) -> worker thread
-    @Override public void onAck(int slot) {
+    @Override public void onAck(int tone) {
         final long t = SystemClock.uptimeMillis();
         worker.post(() -> {
             if (!sending || sched == null || paused) return;
-            if (sched.onAck(slot, t)) render();
+            boolean ok = sched.onAck(tone, t);
+            lastHeard = tone;
+            lastHeardStale = ok ? 0 : 1;
+            lastHeardAt = t;
+            if (ok) render();
             schedule();
         });
+    }
+
+    /** the microphone died mid-transfer: nothing can be acknowledged any more, so loop (and say so) */
+    @Override public void onMicLost() {
+        worker.post(() -> {
+            if (!sending || sched == null || !ackMode || sched.finished()) return;
+            listener = null;
+            ackMode = false;
+            loopReason = getString(R.string.loop_reason_lost);
+            sched = new SlotScheduler(frames.size(), sched.slots, periodMs, false);
+            drawn[0] = drawn[1] = -2;
+            sched.start(SystemClock.uptimeMillis());
+            render();
+            schedule();
+        });
+        ui.post(() -> toast(getString(R.string.mic_failed)));
     }
 
     @Override public void onDone() {

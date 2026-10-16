@@ -246,8 +246,10 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
         if (res == Protocol.Assembler.Result.RESTARTED) policy.reset();
         boolean done = asm.complete();
         if (beepOn && !done) {
-            int slot = policy.onFrame(asm.lastSeen(), now);   // also for duplicates: lets the sender move on
-            if (slot >= 0) player.ack(slot);
+            // alternating-bit ack (tone = slot + bit of this chunk), also for duplicates: the sender may have
+            // missed the first ack and is still showing it
+            int tone = policy.onFrame(asm.lastSeen(), now);
+            if (tone >= 0) player.ack(tone);
         }
         if (res == Protocol.Assembler.Result.DUPLICATE) return;
         int total = asm.total(), got = asm.received(), last = asm.lastIndex();

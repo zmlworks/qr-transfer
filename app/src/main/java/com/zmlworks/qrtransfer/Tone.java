@@ -1,27 +1,45 @@
 package com.zmlworks.qrtransfer;
 
 /**
- * Acknowledgment tones (receiver → sender, the only back channel; no radio).
- * <ul>
- *   <li>Slot A (top / left QR, even chunk numbers): 1500 Hz, 100 ms</li>
- *   <li>Slot B (bottom / right QR, odd chunk numbers): 2200 Hz, 100 ms</li>
- *   <li>DONE (whole transfer verified): 2700 Hz, 450 ms</li>
- * </ul>
- * Chosen inside 1.2–3 kHz, where small phone speakers are loud and flat and phone/PC microphones (16 kHz sampling)
- * are clean, above mains hum and most speech energy. They are ≥ 500 Hz apart (≥ 8 Goertzel bins at 62.5 Hz/bin,
- * far outside the Hann main lobe of ±125 Hz) and no tone sits near another's 2nd/3rd harmonic (3000, 4400, 4500 Hz…),
- * so speaker distortion of one tone cannot fake another. The sender detects them with Goertzel (one DFT bin per tone).
+ * Acknowledgment tones, v0.3.0 (receiver → sender, the only back channel; no radio).
+ * <p>Alternating-bit acks: every chunk is acknowledged by the tone of (slot, parity) — slot = index &amp; 1
+ * (A = top/left = even chunks, B = bottom/right = odd chunks), parity = (index &gt;&gt; 1) &amp; 1 (position within the
+ * slot, alternating 0/1). So the tone tells the sender exactly which of two consecutive chunks of a slot was read
+ * (index mod 4):
+ * <pre>
+ *   A0 1350 Hz  chunk ≡ 0 (mod 4)      B0 2050 Hz  chunk ≡ 1 (mod 4)
+ *   A1 1700 Hz  chunk ≡ 2 (mod 4)      B1 2400 Hz  chunk ≡ 3 (mod 4)
+ *   DONE 3050 Hz, long (400 ms)        whole transfer received and CRC-verified
+ * </pre>
+ * Why these: all inside 1.3–3.1 kHz, where small phone speakers are loud and laptop/phone microphones are flat and far
+ * above mains hum and the bulk of speech energy. Neighbours are ≥ 350 Hz apart (≥ 5.6 Goertzel bins at 62.5 Hz/bin;
+ * the Hann main lobe is ±2 bins). No tone is 2× or 3× another, and every 2nd/3rd harmonic lands ≥ 300 Hz from every
+ * other tone (2×1350 = 2700, 2×1700 = 3400, …), so speaker distortion cannot fake another tone. They also stay ≥ 150 Hz
+ * (≥ 2.4 bins, rejected by the neighbour-bin test) from the 0.1.0/0.2.0 tones (1500/1900/2200/2700/2850 Hz), so an old
+ * receiver's beeps are never mistaken for 0.3.0 acks.
+ * <p>Durations: an ack is 80 ms (10 ms raised-cosine fades); the detector needs 3 consecutive 16 ms blocks (48 ms; a blip shorter than ~33 ms can never span them), which
+ * leaves margin for unaligned blocks, fades and room echo. Tones are serialised with a 40 ms gap so the detector re-arms.
+ * DONE is 400 ms and needs 10 consecutive blocks (160 ms), so no short ack (or a short burst of anything) can end a
+ * transfer.
  */
 public final class Tone {
     private Tone() {}
 
     public static final int RATE = 16_000;
-    public static final double A_HZ = 1500, B_HZ = 2200, DONE_HZ = 2700;
-    public static final int ACK_MS = 100, DONE_MS = 450, GAP_MS = 40;
-    public static final int BLOCK = 256;                      // 16 ms at 16 kHz
-    public static final int ACK_BLOCKS = 2, DONE_BLOCKS = 8;  // consecutive blocks needed: 32 ms / 128 ms
+    /** tone ids (index into {@link #HZ}) */
+    public static final int A0 = 0, A1 = 1, B0 = 2, B1 = 3, DONE = 4, COUNT = 5;
+    public static final double[] HZ = {1350, 1700, 2050, 2400, 3050};
+    public static final String[] NAMES = {"A0", "A1", "B0", "B1", "DONE"};
+    public static final int ACK_MS = 80, DONE_MS = 400, GAP_MS = 40;
+    public static final int BLOCK = 256;                       // 16 ms at 16 kHz (62.5 Hz/bin)
+    public static final int ACK_BLOCKS = 3, DONE_BLOCKS = 10;  // consecutive blocks needed: 48 ms / 160 ms
+    /** detection thresholds (shared with web/sender.html) */
+    public static final double MIN_RATIO = 0.30, NEIGHBOUR_HZ = 190, NEIGHBOUR_FACTOR = 6, OTHER_FACTOR = 6,
+            MIN_RMS = 120 / 32767.0, FLOOR_FACTOR = 2.0;
 
-    public static double slotHz(int slot) { return slot == 0 ? A_HZ : B_HZ; }
+    /** Ack tone id for a chunk index: slot (index &amp; 1) and alternating bit ((index &gt;&gt; 1) &amp; 1). */
+    public static int toneOf(int index) { return (index & 1) * 2 + ((index >> 1) & 1); }
+    public static int slotOfTone(int tone) { return tone >> 1; }
 
     /** 16-bit PCM sine with 10 ms raised-cosine fade in/out (no clicks). */
     public static short[] synth(double hz, int ms, int rate, double amp) {
@@ -37,15 +55,15 @@ public final class Tone {
     }
 
     /**
-     * Fraction of the block's energy at frequency hz: 1.0 for a pure tone at hz, ~0 for silence,
-     * speech or other tones. Generalized Goertzel (non-integer bin) over a Hann-windowed block.
+     * Fraction of the block's energy at frequency hz: 1.0 for a pure tone at hz, ~0 for silence or other tones.
+     * Generalized Goertzel (non-integer bin) over a Hann-windowed block. Samples are normalized (−1..1).
      */
-    public static double ratio(short[] x, int off, int n, double hz, int rate) {
+    public static double ratio(double[] x, int n, double hz, int rate) {
         double w = 2 * Math.PI * hz / rate, coeff = 2 * Math.cos(w);
         double s1 = 0, s2 = 0, energy = 0, sumW = 0, sumW2 = 0;
         for (int i = 0; i < n; i++) {
             double win = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
-            double v = x[off + i] * win;
+            double v = x[i] * win;
             energy += v * v;
             sumW += win;
             sumW2 += win * win;
@@ -59,50 +77,78 @@ public final class Tone {
         return power / energy * 2 * sumW2 / (sumW * sumW);
     }
 
-    /** Debounced detector: fires once per tone after `need` consecutive matching blocks. */
-    public static final class Detector {
-        private final double hz, threshold, minRms;
-        private final int need, rate;
-        private int run;
-        private boolean fired;
-
-        public Detector(double hz, int need, int rate) {
-            this.hz = hz; this.need = need; this.rate = rate; this.threshold = 0.40; this.minRms = 120;
-        }
-
-        /** Feed one block; returns true exactly once at the start of each detected tone. */
-        public boolean feed(short[] x, int off, int n) {
-            double e = 0;
-            for (int i = 0; i < n; i++) e += (double) x[off + i] * x[off + i];
-            boolean hit = Math.sqrt(e / n) >= minRms && ratio(x, off, n, hz, rate) >= threshold;
-            if (hit) {
-                run++;
-                if (run >= need && !fired) { fired = true; return true; }
-            } else { run = 0; fired = false; }
-            return false;
-        }
+    public static double ratio(short[] x, int off, int n, double hz, int rate) {
+        double[] d = new double[n];
+        for (int i = 0; i < n; i++) d[i] = x[off + i] / 32768.0;
+        return ratio(d, n, hz, rate);
     }
 
-    /** Events reported by {@link Listener}. */
-    public static final int EV_A = 0, EV_B = 1, EV_DONE = 2;
+    /**
+     * Which tone (if any) dominates one block, or -1. A tone wins only if
+     * (1) the block is loud enough: rms ≥ MIN_RMS and ≥ FLOOR_FACTOR × the tracked noise floor,
+     * (2) ≥ MIN_RATIO of the block energy is at its frequency,
+     * (3) it is ≥ NEIGHBOUR_FACTOR × stronger than the bins ±190 Hz around it (local noise / off-frequency tones), and
+     * (4) it is ≥ OTHER_FACTOR × stronger than every other protocol tone.
+     */
+    public static int classify(double[] x, int n, int rate, double noiseFloor, double[] ratiosOut) {
+        double e = 0;
+        for (int i = 0; i < n; i++) e += x[i] * x[i];
+        double rms = Math.sqrt(e / n);
+        double[] r = ratiosOut != null ? ratiosOut : new double[COUNT];
+        int best = -1;
+        for (int k = 0; k < COUNT; k++) {
+            r[k] = ratio(x, n, HZ[k], rate);
+            if (best < 0 || r[k] > r[best]) best = k;
+        }
+        if (rms < MIN_RMS || rms < FLOOR_FACTOR * noiseFloor || r[best] < MIN_RATIO) return -1;
+        for (int k = 0; k < COUNT; k++) if (k != best && r[best] < OTHER_FACTOR * r[k]) return -1;
+        double lo = ratio(x, n, HZ[best] - NEIGHBOUR_HZ, rate), hi = ratio(x, n, HZ[best] + NEIGHBOUR_HZ, rate);
+        if (r[best] < NEIGHBOUR_FACTOR * Math.max(lo, hi)) return -1;
+        return best;
+    }
 
-    /** The three detectors together; feed blocks, get events (EV_*) or -1. */
+    /**
+     * Debounced 5-tone detector: feed blocks of {@link #BLOCK}-ish samples, get at most one event per block —
+     * the tone id (A0..DONE) the first time a tone has lasted its minimum duration, else -1.
+     * One event per tone burst; the detector re-arms after a block without that tone.
+     */
     public static final class Listener {
-        private final Detector a, b, done;
+        private final int rate;
+        private final double[] buf;
+        private final double[] ratios = new double[COUNT];
+        private int run, runTone = -1;
+        private boolean fired;
+        private double floor = 0;
+        private int lastClass = -1;
+        private double lastRms;
 
-        public Listener(int rate) {
-            a = new Detector(A_HZ, ACK_BLOCKS, rate);
-            b = new Detector(B_HZ, ACK_BLOCKS, rate);
-            done = new Detector(DONE_HZ, DONE_BLOCKS, rate);
+        public Listener(int rate) { this.rate = rate; this.buf = new double[Math.round(rate * 0.016f)]; }
+        public int blockSize() { return buf.length; }
+        /** result of the last block (for a live indicator): tone id or -1, its rms */
+        public int lastClass() { return lastClass; }
+        public double lastRms() { return lastRms; }
+        public double noiseFloor() { return floor; }
+
+        /** One block of 16-bit samples (length = blockSize()). */
+        public int feed(short[] x, int off, int n) {
+            for (int i = 0; i < n; i++) buf[i] = x[off + i] / 32768.0;
+            return feedBlock(buf, n);
         }
 
-        /** Returns a bit set of events found in this block (bit EV_A, EV_B, EV_DONE). */
-        public int feed(short[] x, int off, int n) {
-            int ev = 0;
-            if (a.feed(x, off, n)) ev |= 1 << EV_A;
-            if (b.feed(x, off, n)) ev |= 1 << EV_B;
-            if (done.feed(x, off, n)) ev |= 1 << EV_DONE;
-            return ev;
+        public int feedBlock(double[] x, int n) {
+            double e = 0;
+            for (int i = 0; i < n; i++) e += x[i] * x[i];
+            double rms = Math.sqrt(e / n);
+            int c = classify(x, n, rate, floor, ratios);
+            lastClass = c;
+            lastRms = rms;
+            // noise floor: follows quiet blocks quickly, loud non-tone blocks slowly (never learns from tones)
+            if (c < 0) floor = rms < floor ? 0.7 * floor + 0.3 * rms : 0.98 * floor + 0.02 * rms;
+            if (c >= 0 && c == runTone) run++;
+            else { run = c >= 0 ? 1 : 0; runTone = c; fired = false; }
+            int need = c == DONE ? DONE_BLOCKS : ACK_BLOCKS;
+            if (c >= 0 && run >= need && !fired) { fired = true; return c; }
+            return -1;
         }
     }
 }

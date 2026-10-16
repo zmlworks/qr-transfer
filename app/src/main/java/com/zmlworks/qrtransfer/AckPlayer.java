@@ -10,22 +10,24 @@ import android.os.SystemClock;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Plays slot A / slot B / DONE beeps (static AudioTracks, prepared once). Tones are played one after another on a
- * private thread (with a short gap) so two acknowledgments from the same camera frame never overlap; a tone for a slot
- * that is already queued is not queued twice.
+ * Plays the A0/A1/B0/B1 ack beeps and the DONE beep (static AudioTracks, prepared once). Tones are played one after
+ * another on a private thread (FIFO, with a short gap) so two acknowledgments from the same camera frame never
+ * overlap and arrive in the order they were decided; a tone that is already queued is not queued twice.
  */
 final class AckPlayer {
     private static final int RATE = 44_100;
-    private final AudioTrack[] tracks = new AudioTrack[3];
-    private final int[] ms = {Tone.ACK_MS, Tone.ACK_MS, Tone.DONE_MS};
-    private final AtomicBoolean[] queued = {new AtomicBoolean(), new AtomicBoolean(), new AtomicBoolean()};
+    private final AudioTrack[] tracks = new AudioTrack[Tone.COUNT];
+    private final int[] ms = new int[Tone.COUNT];
+    private final AtomicBoolean[] queued = new AtomicBoolean[Tone.COUNT];
     private final HandlerThread thread = new HandlerThread("ack-player");
     private final Handler h;
 
     AckPlayer() {
-        tracks[0] = track(Tone.synth(Tone.A_HZ, Tone.ACK_MS, RATE, 0.7));
-        tracks[1] = track(Tone.synth(Tone.B_HZ, Tone.ACK_MS, RATE, 0.7));
-        tracks[2] = track(Tone.synth(Tone.DONE_HZ, Tone.DONE_MS, RATE, 0.7));
+        for (int k = 0; k < Tone.COUNT; k++) {
+            ms[k] = k == Tone.DONE ? Tone.DONE_MS : Tone.ACK_MS;
+            tracks[k] = track(Tone.synth(Tone.HZ[k], ms[k], RATE, 0.7));
+            queued[k] = new AtomicBoolean();
+        }
         thread.start();
         h = new Handler(thread.getLooper());
     }
@@ -59,9 +61,9 @@ final class AckPlayer {
         });
     }
 
-    /** slot 0 = A, 1 = B */
-    void ack(int slot) { enqueue(slot == 0 ? 0 : 1); }
-    void done() { enqueue(2); }
+    /** tone = Tone.A0..B1 (from Tone.toneOf(chunk index)) */
+    void ack(int tone) { if (tone >= 0 && tone < Tone.DONE) enqueue(tone); }
+    void done() { enqueue(Tone.DONE); }
 
     void release() {
         h.removeCallbacksAndMessages(null);

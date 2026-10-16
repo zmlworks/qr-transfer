@@ -5,12 +5,21 @@ import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 
-/** Sender side: listens on the microphone for the receiver's slot A / slot B / DONE tones. */
+/** Sender side: listens on the microphone for the receiver's A0/A1/B0/B1 ack tones and the DONE tone. */
 final class AckListener {
-    interface Callback { void onAck(int slot); void onDone(); }
+    interface Callback {
+        /** an ack tone (Tone.A0..B1) was heard */
+        void onAck(int tone);
+        void onDone();
+        /** the microphone stopped delivering audio (taken by another app, error) */
+        void onMicLost();
+    }
 
     private final Callback cb;
     private volatile boolean running;
+    /** live indicator: tone id dominating the latest block (or -1) and its level (0..1) */
+    volatile int liveTone = -1;
+    volatile double liveRms;
     private Thread thread;
 
     AckListener(Callback cb) { this.cb = cb; }
@@ -29,28 +38,31 @@ final class AckListener {
         running = true;
         thread = new Thread(() -> {
             Tone.Listener tones = new Tone.Listener(Tone.RATE);
-            short[] buf = new short[Tone.BLOCK];
+            short[] buf = new short[tones.blockSize()];
+            boolean lost = false;
             try {
                 rec.startRecording();
                 while (running) {
                     int n = 0;
                     while (n < buf.length && running) {
                         int r = rec.read(buf, n, buf.length - n);
-                        if (r <= 0) { running = false; break; }
+                        if (r <= 0) { lost = true; running = false; break; }
                         n += r;
                     }
                     if (n < buf.length) break;
                     int ev = tones.feed(buf, 0, n);
-                    if ((ev & (1 << Tone.EV_A)) != 0) cb.onAck(0);
-                    if ((ev & (1 << Tone.EV_B)) != 0) cb.onAck(1);
-                    if ((ev & (1 << Tone.EV_DONE)) != 0) cb.onDone();
+                    liveTone = tones.lastClass();
+                    liveRms = tones.lastRms();
+                    if (ev == Tone.DONE) cb.onDone();
+                    else if (ev >= 0) cb.onAck(ev);
                 }
-            } catch (IllegalStateException ignored) {
-                // recorder died (e.g. another app took the mic): the sender falls back to its timeouts
+            } catch (IllegalStateException e) {
+                lost = true;   // recorder died (e.g. another app took the mic)
             } finally {
                 try { rec.stop(); } catch (IllegalStateException ignored) { }
                 rec.release();
             }
+            if (lost) cb.onMicLost();
         }, "ack-listener");
         thread.start();
         return true;
