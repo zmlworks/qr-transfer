@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ScrollView
+        android:id="@+id/setup"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/send_title"
+                android:textSize="18sp" />
+
+            <EditText
+                android:id="@+id/text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@color/bg2"
+                android:gravity="top|start"
+                android:hint="@string/text_hint"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine"
+                android:minLines="6"
+                android:padding="8dp"
+                android:textColorHint="@color/dim" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/pick"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pick_file" />
+
+                <TextView
+                    android:id="@+id/file_info"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="@string/no_file"
+                    android:textColor="@color/dim" />
+
+                <Button
+                    android:id="@+id/clear_file"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:contentDescription="@string/clear_file"
+                    android:text="@string/x_glyph" />
+            </LinearLayout>
+
+            <TextView style="@style/Label" android:text="@string/chunk_size" />
+            <Spinner android:id="@+id/chunk" android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <TextView style="@style/Label" android:text="@string/speed" />
+            <Spinner android:id="@+id/fps" android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <TextView style="@style/Label" android:text="@string/ecc_level" />
+            <Spinner android:id="@+id/ecc" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+            <CheckBox
+                android:id="@+id/ack"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:buttonTint="@color/hi"
+                android:text="@string/ack_mode" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ack_help"
+                android:textColor="@color/dim"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/start"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="16dp"
+                android:text="@string/start_send"
+                android:textSize="18sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/show"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg2"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/qr"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:adjustViewBounds="true"
+            android:contentDescription="@string/qr_desc"
+            android:padding="8dp"
+            android:scaleType="fitCenter" />
+
+        <TextView
+            android:id="@+id/info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:padding="6dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp">
+
+            <Button android:id="@+id/prev" style="@style/Ctl" android:contentDescription="@string/prev" android:text="@string/prev_glyph" />
+            <Button android:id="@+id/pause" style="@style/Ctl" android:contentDescription="@string/pause" android:text="@string/pause_glyph" />
+            <Button android:id="@+id/next" style="@style/Ctl" android:contentDescription="@string/next" android:text="@string/next_glyph" />
+            <Button android:id="@+id/stop" style="@style/Ctl" android:contentDescription="@string/stop" android:text="@string/stop_glyph" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

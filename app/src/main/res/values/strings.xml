@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">QR Split Transfer</string>
+    <string name="app_label">QR Transfer</string>
+    <string name="tagline">Move text or small files between screens and cameras — no radio at all.</string>
+    <string name="send">📤 Send</string>
+    <string name="receive">📥 Receive</string>
+    <string name="send_via_qr">Send via QR</string>
+    <string name="share_web">Share the PC web sender (HTML)…</string>
+    <string name="about">How it works\n• The sender splits data into chunks and shows them as an animated sequence of QR codes. Each code carries: transfer ID, index, total and the CRC-32 of the whole content (format QT1:ID:INDEX:TOTAL:CRC32:DATA).\n• Data is packed with Base45 so the QR uses alphanumeric mode (≈30 % more data per code than base64). Text is compressed (DEFLATE) when that helps.\n• The receiver scans in any order, shows which chunks are missing, and verifies the CRC-32 when complete.\n• Acknowledgment tone: the receiver beeps (1900 Hz) for each new chunk and plays 2850 Hz when done. With \"advance on tone\" the sender listens with the microphone, moves on as soon as it hears the beep, skips acknowledged chunks and stops on the done tone. Without it, the sender simply loops all chunks.\n• PC → phone: open web/sender.html (single offline file) in a desktop browser.\n\nNo internet, Bluetooth, Wi-Fi or NFC is used. Keep the receiving phone ~20–40 cm from the screen; lower the speed or chunk size if scanning is slow.\n\nLicenses: ZXing core (Apache-2.0), qrcode-generator by Kazuhiko Arase (MIT, web sender). App: MIT © 2026 zmlworks. Built by the AI assistant Grok Bot.</string>
+    <string name="send_title">Send text or a file</string>
+    <string name="text_hint">Text to send…</string>
+    <string name="pick_file">Choose file…</string>
+    <string name="no_file">No file (sending the text)</string>
+    <string name="clear_file">Clear file</string>
+    <string name="x_glyph" translatable="false">✕</string>
+    <string name="file_info">%1$s (%2$,d bytes)</string>
+    <string name="too_large">File too large (max %1$,d KB).</string>
+    <string name="nothing">Nothing to send.</string>
+    <string name="chunk_size">Chunk size per QR code</string>
+    <string-array name="chunks"><item>Small — 200 bytes (easiest to scan)</item><item>Medium — 400 bytes</item><item>Large — 700 bytes</item><item>X-large — 1000 bytes</item></string-array>
+    <string name="speed">Speed</string>
+    <string-array name="fps"><item>2 codes / s</item><item>4 codes / s</item><item>6 codes / s</item><item>10 codes / s</item></string-array>
+    <string name="ecc_level">QR error correction</string>
+    <string-array name="ecc"><item>L (7 %) — most data</item><item>M (15 %)</item><item>Q (25 %) — most robust</item></string-array>
+    <string name="ack_mode">Advance on the receiver\'s tone (microphone)</string>
+    <string name="ack_help">Optional. The sender listens for the receiver\'s beep, moves on early and skips acknowledged chunks. Without it, all chunks loop continuously.</string>
+    <string name="start_send">▶ Start</string>
+    <string name="preparing">Preparing…</string>
+    <string name="qr_desc">QR code frame</string>
+    <string name="prev">Previous</string>
+    <string name="next">Next</string>
+    <string name="pause">Pause</string>
+    <string name="stop">Stop</string>
+    <string name="prev_glyph" translatable="false">◀</string>
+    <string name="next_glyph" translatable="false">▶▶</string>
+    <string name="pause_glyph" translatable="false">⏸</string>
+    <string name="stop_glyph" translatable="false">■</string>
+    <string name="mic_denied">Microphone denied: looping all chunks instead.</string>
+    <string name="mic_failed">Could not open the microphone: looping all chunks instead.</string>
+    <string name="receiver_done">Receiver finished (done tone heard).</string>
+    <string name="camera_denied">Camera permission is needed to receive.</string>
+    <string name="no_camera">No camera found.</string>
+    <string name="camera_failed">Camera configuration failed.</string>
+    <string name="waiting_qr">Point the camera at the sender\'s QR codes…</string>
+    <string name="progress">%1$d / %2$d chunks (%3$d %%)  ID %4$s</string>
+    <string name="missing">Missing: %1$s</string>
+    <string name="beep">Beep on each new chunk (acknowledgment tone)</string>
+    <string name="new_transfer">New transfer detected — restarted.</string>
+    <string name="verify_failed">Verification failed (%1$s). Receiving again.</string>
+    <string name="result_ok">✓ Complete — CRC-32 %1$s verified\n%2$s · %3$,d bytes</string>
+    <string name="kind_file">File \"%1$s\"</string>
+    <string name="kind_text">Text</string>
+    <string name="copy">Copy</string>
+    <string name="save">Save…</string>
+    <string name="share">Share</string>
+    <string name="again">Next</string>
+    <string name="copied">Copied.</string>
+    <string name="saved">Saved.</string>
+</resources>

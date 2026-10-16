@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- three stacked QR-ish tiles with a sequence arrow -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#3D0105" android:strokeColor="#C6CFC6" android:strokeWidth="1.5" android:pathData="M28,40h26v26h-26z"/>
+    <path android:fillColor="#0A3226" android:strokeColor="#C6CFC6" android:strokeWidth="1.5" android:pathData="M36,32h26v26h-26z"/>
+    <path android:fillColor="#C6CFC6" android:pathData="M44,24h40v40h-40z"/>
+    <path android:fillColor="#002218" android:pathData="M48,28h10v10h-10z M70,28h10v10h-10z M48,50h10v10h-10z M62,44h4v4h-4z M70,52h4v8h-4z M76,48h4v4h-4z M62,54h4v6h-4z"/>
+    <path android:fillColor="#C6CFC6" android:pathData="M50,30h6v6h-6z M72,30h6v6h-6z M50,52h6v6h-6z"/>
+    <path android:fillColor="#002218" android:pathData="M51,31h4v4h-4z M73,31h4v4h-4z M51,53h4v4h-4z"/>
+    <path android:strokeColor="#00A2E8" android:strokeWidth="3" android:fillColor="#00000000" android:strokeLineCap="round" android:pathData="M30,78 H74 M68,72 L74,78 L68,84"/>
+</vector>
