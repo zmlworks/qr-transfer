@@ -24,6 +24,7 @@ public class WebSchedulerParityTest {
                 String[] p = line.split(" ");
                 if (p[0].equals("#sched")) {
                     s = new SlotScheduler(Integer.parseInt(p[1]), Integer.parseInt(p[2]), 250, p[3].equals("1"));
+                    s.setMirror(p[4].equals("1"));
                     scheds++;
                     continue;
                 }
@@ -33,19 +34,21 @@ public class WebSchedulerParityTest {
                     case "start": t = Long.parseLong(p[1]); s.start(t); got = ""; break;
                     case "ack": t = Long.parseLong(p[2]); got = s.onAck(Integer.parseInt(p[1]), t) ? "1" : "0"; break;
                     case "tick": t = Long.parseLong(p[1]); got = s.tick(t) ? "1" : "0"; break;
+                    case "requeue": t = Long.parseLong(p[2]); got = s.requeue(Integer.parseInt(p[1]), t) ? "1" : "0"; break;
                     default: t = Long.parseLong(p[3]); s.step(Integer.parseInt(p[1]), Integer.parseInt(p[2]), t); got = ""; break;
                 }
                 if (!got.isEmpty()) assertEquals(line, p[arrow - 1], got);
                 if (p[0].equals("ack") && got.equals("1")) good++;
                 String state = s.shown(0) + " " + s.shown(1) + " " + s.expectedTone(0) + " " + s.expectedTone(1) + " "
                         + s.ackedCount() + " " + s.rounds() + " " + s.goodAcks() + " " + s.staleAcks() + " " + s.latencyMs()
-                        + " " + (s.silent(t) ? 1 : 0) + " " + s.nextDeadline(t);
+                        + " " + (s.silent(t) ? 1 : 0) + " " + s.nextDeadline(t)
+                        + " " + (s.isMirror(0) ? 1 : 0) + (s.isMirror(1) ? 1 : 0) + " " + s.requeues();
                 assertEquals(line, String.join(" ", java.util.Arrays.copyOfRange(p, arrow + 1, p.length)), state);
                 lines++;
             }
         }
-        assertEquals(6, scheds);
-        assertTrue(lines > 2000);
+        assertEquals(10, scheds);
+        assertTrue(lines > 4000);
         assertTrue("script exercises matching acks", good > 50);
     }
 }

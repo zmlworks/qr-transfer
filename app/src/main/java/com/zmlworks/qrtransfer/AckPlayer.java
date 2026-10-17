@@ -10,7 +10,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Plays the A0/A1/B0/B1 ack beeps and the DONE beep (0.3.1).
+ * Plays the A0/A1/B0/B1 ack beeps and the DONE beep (0.3.1; 0.4.0: DONE at {@link Tone#DONE_GAIN} = 28 % of the ack
+ * amplitude, acks unchanged).
  * <ul>
  *   <li>One streaming AudioTrack, {@code USAGE_MEDIA} — the media volume (the one the volume keys change on the receive
  *       screen) applies, and it plays in silent / vibrate mode. Native output rate (no resampler).</li>
@@ -42,7 +43,8 @@ final class AckPlayer {
         int r = AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC);
         rate = r >= 8000 && r <= 192_000 ? r : 48_000;
         for (int k = 0; k < Tone.COUNT; k++) {
-            pcm[k] = Tone.synth(Tone.HZ[k], k == Tone.DONE ? Tone.DONE_MS : Tone.ACK_MS, rate, AMP);
+            // acks at AMP (they carry the protocol); DONE (only "finished") much quieter (0.4.0)
+            pcm[k] = Tone.synth(Tone.HZ[k], k == Tone.DONE ? Tone.DONE_MS : Tone.ACK_MS, rate, k == Tone.DONE ? AMP * Tone.DONE_GAIN : AMP);
             queued[k] = new AtomicBoolean();
         }
         tick = new short[rate / 100];                       // 10 ms of silence

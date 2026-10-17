@@ -1,7 +1,8 @@
 // Simulated acoustic channel: receiver phone speaker -> room -> laptop microphone -> web sender's tone detector.
 // Measures, per scenario, the ack detection rate, wrong-tone events (the dangerous kind: a wrong tone can advance a
 // slot) and false events per minute on non-tone sound (fan noise, speech, clicks).
-// Usage: node tools/acoustic-sim.js [sender.html] [--trials N] [--json out.json] [--ackms 80] [--sens 3]
+// Usage: node tools/acoustic-sim.js [sender.html] [--trials N] [--json out.json] [--ackms 80] [--sens 3] [--donegain 0.28]
+//   --donegain: DONE amplitude relative to the acks (app 0.4.0 plays DONE at Tone.DONE_GAIN = 0.28, about −11 dB)
 //   sender.html defaults to web/sender.html; pass an older copy (e.g. git show 9c19ad7:web/sender.html) to compare.
 "use strict";
 const fs = require("fs"), path = require("path"), vm = require("vm");
@@ -171,6 +172,7 @@ function agc(x, fs, targetDb, maxGainDb) {
 function quantize(x) { return Float32Array.from(x, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768))) / 32768); }
 
 /** One trial: a sequence of acks/DONE through the channel. Returns {sig, marks:[{at,end,tone}]} */
+const DONE_GAIN = Number(opt("donegain", 1));
 function trial(QT1, p, seed) {
   const r = rng(seed), fs = p.fs, ackMs = p.ackMs, gapMin = p.gapMs || 40;
   const N = p.acks || 30, marks = [];
@@ -191,7 +193,7 @@ function trial(QT1, p, seed) {
     }
     const ms = tone === 4 ? 400 : ackMs;
     const warm = p.warmup ? r.uni(0, p.warmup) : 0;
-    toneBurst(src, t, QT1.HZ[tone], ms, fs, 0.7, warm);
+    toneBurst(src, t, QT1.HZ[tone], ms, fs, tone === 4 ? 0.7 * DONE_GAIN : 0.7, warm);
     marks.push({ at: t, end: t + Math.round(fs * ms / 1000), tone });
     if (slot >= 0) lastEnd[slot] = t + Math.round(fs * ms / 1000);
     short = !short && r() < 0.35; prevSlot = slot;
@@ -219,17 +221,17 @@ function listen(QT1, sig, fs) {
 }
 
 function score(ev, marks, fs) {
-  let hit = 0, wrong = 0, extra = 0, extraDup = 0; const used = new Set();
+  let hit = 0, wrong = 0, extra = 0, extraDup = 0, doneHit = 0; const used = new Set();
   for (const e of ev) {
     // the event must come during or up to 250 ms after a burst of the same tone
     const m = marks.findIndex((m, k) => !used.has(k) && e.at >= m.at && e.at <= m.end + fs * 0.25 && m.tone === e.tone);
-    if (m >= 0) { used.add(m); hit++; continue; }
+    if (m >= 0) { used.add(m); hit++; if (marks[m].tone === 4) doneHit++; continue; }
     const any = marks.some((m) => e.at >= m.at && e.at <= m.end + fs * 0.25);
     const dup = marks.some((m) => m.tone === e.tone && e.at > m.end && e.at <= m.end + fs * 0.4);
     if (dup) { extraDup++; continue; }
     if (any) { wrong++; if (process.env.SIMDEBUG) console.log("    wrong", e, marks.filter((m) => e.at >= m.at - fs * 0.3 && e.at <= m.end + fs * 0.3)); } else extra++;
   }
-  return { hit, wrong, extra, dup: extraDup, total: marks.length };
+  return { hit, wrong, extra, dup: extraDup, total: marks.length, doneHit, doneTotal: marks.filter((m) => m.tone === 4).length };
 }
 
 const SCEN = [
@@ -261,13 +263,13 @@ function run(file) {
   for (const [si, [name, p0]] of SCEN.entries()) {
     if (fpOnly || (only && !only.split(",").includes(String(si)))) continue;
     const p = Object.assign({ fs: 48000, ackMs, gapMs: ackMs >= 120 ? 60 : 40 }, p0);
-    let s = { hit: 0, wrong: 0, extra: 0, dup: 0, total: 0 };
+    let s = { hit: 0, wrong: 0, extra: 0, dup: 0, total: 0, doneHit: 0, doneTotal: 0 };
     for (let k = 0; k < TRIALS; k++) {
       const { sig, marks } = trial(QT1, p, 1000 + k * 7919 + name.length);
       const r = score(listen(QT1, sig, p.fs), marks, p.fs);
       for (const f in s) s[f] += r[f];
     }
-    out.scenarios.push({ name, detect: s.hit / s.total, wrong: s.wrong, extra: s.extra, dup: s.dup, total: s.total });
+    out.scenarios.push({ name, detect: s.hit / s.total, wrong: s.wrong, extra: s.extra, dup: s.dup, total: s.total, done: s.doneHit + "/" + s.doneTotal });
   }
   for (const [fi, [name, gen]] of FP.entries()) {
     if (only && !fpOnly) continue;
@@ -283,8 +285,8 @@ function run(file) {
 }
 
 const res = run(htmlPath);
-console.log("detector: " + path.basename(htmlPath) + (ACK_MS ? "  (ack " + ACK_MS + " ms)" : "  (ack 80 ms)") + (SENS ? "  sensitivity " + SENS : ""));
-for (const s of res.scenarios) console.log(`  ${(100 * s.detect).toFixed(0).padStart(4)} %  wrong ${String(s.wrong).padStart(2)}  dup ${String(s.dup).padStart(2)}  stray ${String(s.extra).padStart(2)}  / ${s.total}   ${s.name}`);
+console.log("detector: " + path.basename(htmlPath) + (ACK_MS ? "  (ack " + ACK_MS + " ms)" : "  (ack 80 ms)") + (SENS ? "  sensitivity " + SENS : "") + (DONE_GAIN !== 1 ? "  DONE gain " + DONE_GAIN : ""));
+for (const s of res.scenarios) console.log(`  ${(100 * s.detect).toFixed(0).padStart(4)} %  wrong ${String(s.wrong).padStart(2)}  dup ${String(s.dup).padStart(2)}  stray ${String(s.extra).padStart(2)}  / ${s.total}  DONE ${s.done}   ${s.name}`);
 for (const f of res.fp) console.log(`  FP ${f.perMin.toFixed(1).padStart(5)} /min   ${f.name} ${f.tones ? "[" + f.tones.slice(0, 60) + "]" : ""}`);
 if (opt("json")) fs.writeFileSync(opt("json"), JSON.stringify(res, null, 1));
 module.exports = { trial, listen, score, loadQT1, rng };

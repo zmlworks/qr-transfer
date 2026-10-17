@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless Chrome (Playwright, system Chrome) checks of the v0.4.0 「一覧表示 (ページ)」 grid mode of web/sender.html.
+"""Headless Chrome (Playwright, system Chrome) checks of the 「一覧表示 (ページ)」 grid mode of web/sender.html (v0.4.0, + 0.5.0).
 Decoding always uses the phone app's own 0.3.1 code on the JVM (FrameDecoder = ZXing multi/half/erase strategy,
 Protocol.Assembler = order-free reassembly + CRC-32): tools/e2e/{GridSim,DecText,PixelCheck}.java.
 
@@ -12,7 +12,10 @@ Protocol.Assembler = order-free reassembly + CRC-32): tools/e2e/{GridSim,DecText
    the identical frame text from every variant, and the other codes are untouched.
 4. receive: every page is screenshotted, a simulated camera (windows, bilinear rescale, blur, glare, noise) feeds the
    app's FrameDecoder + Assembler, which must reassemble the original bytes with a matching CRC-32 (two configs).
-5. tones: class tones only light the class lamps (no page change); DONE (3050 Hz) shows 「受信完了」.
+   0.5.0: the same page screenshots are also decoded with zxing-cpp 3.1.1 (the 0.4.0 app's default engine, via the
+   Python binding of the same C++ core) for comparison.
+5. tones: class tones only light the class lamps (no page change); (0.5.0) after the auto re-mask interval only the
+   codes whose class was not heard are redrawn with the next mask (label m3↻); DONE (3050 Hz) shows 「受信完了」.
 6. writes the documentation screenshot.
 Usage: python3 tools/test-grid-chrome.py [screenshot.png]   (needs a prior ./gradlew compileDebugJavaWithJavac)
 """
@@ -21,7 +24,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 URL = (ROOT / "web" / "sender.html").as_uri()
-SHOT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qr-sender-0.4.0-screenshot.png"
+SHOT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qr-sender-0.5.0-grid-screenshot.png"
 CHROME = os.environ.get("CHROME", "/usr/bin/google-chrome")
 import shutil
 JAVA_HOME = os.environ.get("JAVA_HOME") or os.path.dirname(os.path.dirname(os.path.realpath(shutil.which("javac"))))
@@ -29,11 +32,12 @@ GH = os.environ.get("GRADLE_USER_HOME", os.path.expanduser("~/.gradle"))
 JAR = glob.glob(GH + "/**/core-3.5.3.jar", recursive=True)[0]
 CLS = str(ROOT / "app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes")
 T = tempfile.mkdtemp(prefix="qrgrid-")
-subprocess.run([JAVA_HOME + "/bin/javac", "-d", T, "-cp", JAR + ":" + CLS] + [str(ROOT / "tools/e2e" / f) for f in ("GridSim.java", "DecText.java", "PixelCheck.java")], check=True)
+subprocess.run([JAVA_HOME + "/bin/javac", "-d", T, "-cp", JAR + ":" + CLS] + [str(ROOT / "tools/e2e" / f) for f in ("GridSim.java", "DecText.java", "PixelCheck.java", "CppBridge.java")], check=True)
+os.environ.setdefault("ZXCPP_BRIDGE", str(ROOT / "tools/e2e/zxcpp_bridge.py"))
 CP = ":".join([JAR, CLS, T])
 
-def java(*args):
-    r = subprocess.run([JAVA_HOME + "/bin/java", "-cp", CP] + list(args), capture_output=True, text=True)
+def java(*args, props=()):
+    r = subprocess.run([JAVA_HOME + "/bin/java"] + ["-D" + x for x in props] + ["-cp", CP] + list(args), capture_output=True, text=True)
     return r.returncode, r.stdout + r.stderr
 
 TEXT_JS = """(n) => { var t = "電波を使わないデータ受け渡し — v0.4.0 grid test ✓\\n";
@@ -200,8 +204,8 @@ with sync_playwright() as pw:
     ctx.close()
 
     # ---- 4. simulated receive of all pages through the app's decoder + assembler ----
-    def sim(pages, frac="0.5"):
-        rc, out = java("GridSim", "1" if frac != "full" else "0", frac if frac != "full" else "1", *pages)
+    def sim(pages, frac="0.5", engine="java"):
+        rc, out = java("GridSim", "1" if frac != "full" else "0", frac if frac != "full" else "1", *pages, props=("engine=" + engine,))
         read = set()
         for l in out.splitlines():
             if "read=[" in l: read |= {int(x) for x in l.split("read=[")[1].rstrip("]").split(",") if x.strip()}
@@ -232,6 +236,14 @@ with sync_playwright() as pw:
         rc, out, read = sim(pages + extra)
         assert rc == 0 and "ASSEMBLED OK" in out and want in out, out
         _, full, fread = sim(pages, "full")
+        # 0.5.0: the same first pass with zxing-cpp (0.4.0 app default), and zxing-cpp + 2× upscale
+        crc, cpp, cread = sim(pages, engine="cpp")
+        cms = [l for l in cpp.splitlines() if l.startswith("decode ms")]
+        if not cms:   # needs a python with zxing-cpp 3.1.1 (env ZXCPP_PY), see tools/e2e/zxcpp_bridge.py
+            print("   (zxing-cpp comparison skipped: bridge not available)")
+        else:
+            print("   zxing-cpp first pass (simulated camera, same frames): read %d/%d  %s" % (len(cread), total, cms[0]))
+            results.setdefault("cpp", {})[name] = {"read": len(cread), "total": total, "java_read": total - len(missing), "timing": cms}
         summary = [l for l in out.splitlines() if l.startswith("frames=") or l.startswith("ASSEMBLED")]
         fulls = [l for l in full.splitlines() if l.startswith("frames=")]
         print("ok - receive %s: %d chunks on %d pages (%d/page); first pass read %d/%d%s; %s | whole-page frames (no camera crop): %s, %d chunks"
@@ -257,10 +269,22 @@ with sync_playwright() as pw:
     s = p.evaluate(SNAP_JS)
     assert s["g"]["heard"][0] and s["g"]["heard"][3] and not s["g"]["heard"][1] and s["g"]["page"] == page0 and not s["g"]["done"], s["g"]["heard"]
     assert "まだ確認音が来ていない組" in s["hint"], s["hint"]
+    # 0.5.0 auto re-mask: after the interval (3 s) only codes of the classes not heard on this page change mask
+    before = {c["i"]: (c["mask"], c["ecl"]) for c in s["cs"]}
+    p.wait_for_function("() => __qtSender.state().grid.remasks > 0", timeout=8000)
+    s = p.evaluate(SNAP_JS)
+    for c, l in zip(s["cs"], s["lb"]):
+        heard = s["g"]["heard"][c["i"] % 4 if False else ((c["i"] & 1) * 2 + ((c["i"] >> 1) & 1))]
+        auto = s["g"]["masks"][str(c["i"])]["auto"]
+        if heard: assert auto == 0 and before[c["i"]] == (c["mask"], c["ecl"]), ("heard class re-masked", c, l)
+        else: assert auto >= 1 and before[c["i"]] != (c["mask"], c["ecl"]) and "↻" in l["text"], ("unheard class not re-masked", c, l)
+    n_auto = sum(1 for c in s["cs"] if s["g"]["masks"][str(c["i"])]["auto"])
+    assert s["g"]["page"] == page0, "auto page advance must stay off"
     p.screenshot(path=SHOT)
     p.evaluate("() => __beep(3050, 400)"); p.wait_for_function("() => __qtSender.state().grid.done", timeout=5000)
     assert p.is_visible("#gdone")
-    print("ok - tones: A0/B1 only lit their class lamps and the 'no ack yet' hint (page unchanged, nothing marked read); DONE 3050 Hz → 「受信完了」")
+    print("ok - tones: A0/B1 only lit their class lamps and the 'no ack yet' hint (page unchanged, nothing marked read); "
+          "auto re-mask redrew only the %d codes of the unheard classes A1/B0 (m↻), page unchanged; DONE 3050 Hz → 「受信完了」" % n_auto)
     ctx.close()
     b.close()
 print("screenshot:", SHOT)

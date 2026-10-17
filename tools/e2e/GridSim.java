@@ -1,10 +1,14 @@
-import com.zmlworks.qrtransfer.FrameDecoder; import com.zmlworks.qrtransfer.Protocol;
+import com.zmlworks.qrtransfer.DecodePipeline; import com.zmlworks.qrtransfer.FrameDecoder; import com.zmlworks.qrtransfer.Protocol; import com.zmlworks.qrtransfer.QrEngine;
 import javax.imageio.ImageIO; import java.awt.*; import java.awt.image.BufferedImage; import java.io.File; import java.util.*;
 
 /**
- * Simulated camera over grid-page screenshots, decoded by the app's own FrameDecoder (0.3.1, unchanged) and fed to the
- * app's Protocol.Assembler (any order, duplicates ignored). Usage:
- *   java GridSim <scale> <window-fraction> <page1.png> [page2.png ...]
+ * Simulated camera over grid-page screenshots, decoded through the app's DecodePipeline and fed to the app's
+ * Protocol.Assembler (any order, duplicates ignored). Usage:
+ *   java [-Dengine=java|cpp] [-Dupscale=0|1] GridSim <scale> <window-fraction> <page1.png> [page2.png ...]
+ * engine=java (default): the app's Java ZXing FrameDecoder (the 0.3.1 decoder, now the fallback setting);
+ * engine=cpp: zxing-cpp 3.1.1 via tools/e2e/zxcpp_bridge.py (Python binding of the same C++ core as the app's AAR,
+ * the app's options). upscale=1: the app's 2× bicubic retry when a frame yields nothing (rate limit as in the app,
+ * one try per 400 ms of simulated time at 30 fps).
  * For every page the "camera" takes 1920×1080 frames: windows of (fraction × screen) sliding over the screenshot in
  * steps of a quarter window, scaled to the camera size (bilinear) with mild blur + sensor noise. scale=0 → full-frame
  * only. Prints codes decoded per frame and finally whether the file was reassembled with a matching CRC-32.
@@ -13,7 +17,10 @@ public class GridSim {
   static final Random RND = new Random(42);
   public static void main(String[] a) throws Exception {
     double frac = Double.parseDouble(a[1]); boolean full = Double.parseDouble(a[0]) == 0;
-    Protocol.Assembler asm = new Protocol.Assembler(); FrameDecoder dec = new FrameDecoder();
+    Protocol.Assembler asm = new Protocol.Assembler();
+    QrEngine eng = "cpp".equals(System.getProperty("engine")) ? new CppBridge() : new FrameDecoder();
+    DecodePipeline dec = new DecodePipeline(eng, "1".equals(System.getProperty("upscale"))); long simMs = 0;
+    System.out.println("engine=" + eng.name() + " upscale=" + dec.upscale());
     int frames = 0, decodedTotal = 0, maxPer = 0; Map<Integer,Integer> hist = new TreeMap<>();
     for (int k = 2; k < a.length; k++) {
       BufferedImage page = ImageIO.read(new File(a[k]));
@@ -26,7 +33,7 @@ public class GridSim {
       }
       for (Rectangle r : wins) {
         BufferedImage cam = camera(page, r, 1920, 1080, !full);
-        java.util.List<String> got = dec.decode(lum(cam), cam.getWidth(), cam.getHeight());
+        java.util.List<String> got = dec.decode(lum(cam), cam.getWidth(), cam.getHeight(), simMs += 33);
         frames++; decodedTotal += got.size(); maxPer = Math.max(maxPer, got.size()); hist.merge(got.size(), 1, Integer::sum);
         for (String t : got) { Protocol.Assembler.Result res = asm.accept(t); if (res == Protocol.Assembler.Result.RESTARTED) throw new IllegalStateException("RESTARTED"); seen.add(t); }
       }
@@ -34,6 +41,7 @@ public class GridSim {
       System.out.println(a[k] + ": frames=" + wins.size() + " distinct codes read=" + seen.size() + "  progress=" + asm.received() + "/" + asm.total() + "  read=" + idx);
     }
     System.out.println("frames=" + frames + " codes/frame avg=" + String.format("%.2f", decodedTotal / (double) frames) + " max=" + maxPer + " histogram=" + hist);
+    System.out.println(String.format("decode ms/frame avg=%.1f (desktop JVM%s)  upscale tries=%d hits=%d", dec.avgMs(), "cpp".equals(System.getProperty("engine")) ? " + Python bridge" : "", dec.upscaleTries(), dec.upscaleHits()));
     System.out.println("received=" + asm.received() + "/" + asm.total() + (asm.complete() ? "" : " missing=" + asm.missingRanges(20)));
     if (asm.complete()) {
       Protocol.Content c = asm.assemble();   // throws on CRC mismatch

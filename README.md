@@ -12,12 +12,42 @@
 
 | 部分 | 版 | 入手 |
 |---|---|---|
-| Android アプリ (受信・送信) | **0.3.1** | Releases の `qr-transfer-0.3.1.apk` |
-| PC 用 Web 送信機 `web/sender.html` | **0.4.0** (一覧表示を追加) | Releases の `qr-sender.html` (sender-v0.4.0) |
+| Android アプリ (受信・送信) | **0.4.0** (デコーダ zxing-cpp、完了音を小さく、共有キュー) | Releases の `qr-transfer-0.4.0.apk` (v0.4.0) |
+| PC 用 Web 送信機 `web/sender.html` | **0.5.0** (2枚・確認音を共有キューに、自動マスク変更) | Releases の `qr-sender.html` (v0.4.0) / APK にも同梱 |
 
-0.4.0 の Web 送信機は **0.3.1 のアプリ (受信側) のままで使えます** (プロトコル QT1・確認音とも変更なし)。
-アプリ 0.3.1 の APK に同梱されている Web 送信機 (「PC用Web送信機を共有」) は 0.3.1 のままです。このリポジトリの
-`web/sender.html` は次にアプリをビルドしたときに 0.4.0 として同梱されます (今回 APK は作り直していません)。
+**互換性**: プロトコル QT1・確認音 (周波数・長さ・「番号 mod 4」の割り当て) は変わっていません。
+**0.5.0 の Web 送信機は 0.3.1 の受信アプリでも使えます** (0.3.1 の受信機はチャンクを順不同で受け取り、確認音は番号 mod 4 で
+鳴らすだけなので、どの順で表示しても正しく応えます)。0.4.0 の受信アプリも旧送信機 (0.3.x / 0.4.0) と使えます。
+組み合わせごとのシミュレーション結果は下の「0.4.0 / 0.5.0 の変更」を参照。
+
+## アプリ 0.4.0 / Web 送信機 0.5.0 の変更
+1. **受信デコーダを zxing-cpp に** (アプリ 0.4.0): Java 版 ZXing の代わりに
+   [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp) 3.1.1 (Apache-2.0、Maven `io.github.zxing-cpp:android:3.1.1` の AAR、
+   ネイティブライブラリ) で読みます。設定: QR のみ、1 フレーム最大 255 個、tryHarder、カメラの Y 平面をそのまま
+   ALPHA_8 の Bitmap にして `read(Bitmap)` に渡します。1 フレームで何も読めなかったときだけ、最大 0.4 秒に 1 回、
+   画像を **2 倍に拡大 (bicubic)** してもう一度読みます (1 モジュールが 2〜3 画素しかない小さいコード向け。1080p で約 20 ms、
+   デスクトップ JVM での計測)。受信画面の「エンジン: zxing-cpp / ZXing(旧)」ボタンで従来の Java 版に戻せます (既定は zxing-cpp)。
+   QR の生成 (アプリの送信側) は従来どおり ZXing core です。
+2. **完了音 (DONE 3050 Hz) を約 28 % の音量に** (アプリ 0.4.0)。確認音 (A0〜B1) の音量は変えていません。
+   Web 送信機は音を出さないので変更なし。
+3. **2枚・確認音を共有キューに** (Web 送信機 0.5.0、アプリの送信側 0.4.0): 0.4.0 までは上/左 = 偶数番、下/右 = 奇数番に
+   固定していたため、片方の担当分が先に終わるともう片方だけで送っていました。今は 2 枚とも共通の「未確認チャンクの列」から取り、
+   **先に確認音が来た方のコードに次の未確認チャンク** を表示します。
+   - 表示中の 2 枚は **必ず違う確認音** になるように選びます (どちらが読めたか音で区別できる)。
+   - 遅れて届いた重複・古い確認音の対策: 画面から消えた音は 0.2 秒 (同じ偶奇の 2 枚が並んでいたチャンクは 0.7 秒) 使わない、
+     表示から 0.25 秒以内に来た確認音は「早すぎる = 前のチャンクへの重複」として無視、どちらも「古い」として数えます。
+     受信アプリ 0.4.0 は重複の抑制を「音ごと」にしました (0.3.1 は偶奇ごとだったので、同じ偶奇の 2 枚が見えると毎フレーム
+     鳴らし直していました)。
+   - 列が空になったコードは、もう一方と同じチャンクを別のマスクで表示します (最後の数枚を 2 回読めるチャンスに)。
+   - タイムアウトで飛ばすことはありません。
+4. **読めないコードの自動マスク変更** (Web 送信機 0.5.0、設定「↻ 読めないコードを自動でマスク変更」既定オン、既定 3 秒):
+   - 2 枚表示: コードごとのタイマー。確認音が来ないまま設定時間がたつと、同じデータのまま **次のマスク** で描き直し
+     (8 マスクを使い切ったら次の誤り訂正レベル)。1 回の表示で 8 回変えても読めなければ、そのチャンクを一旦列に戻し
+     (確認済みにはしない)、他のチャンクを先に送って **最後にもう一度** 表示します。ラベルに `#12  m3↻` のようにマスクを表示。
+     クリック = 次のマスク、Shift+クリック / 右クリック = 誤り訂正レベル (ラベル `m3*`)。
+   - 一覧表示: マイク使用時、このページでまだ確認音の組 (i mod 4) が聞こえていないコード (= 未読の可能性が高いもの) だけを
+     設定時間ごとに次のマスクで描き直します (ラベル `m3↻`、クリックで選んだコードは変えない)。**ページ送りは今までどおり手動**。
+     マイクを使わないときは判断材料がないので自動変更しません。
 
 ## 使い方
 - **送信**: テキストを入力、またはファイルを選ぶ (最大 2 MB) → チャンクサイズ・速度・誤り訂正を選んで「送信開始」。
@@ -93,6 +123,7 @@
 - 確認音は読むたびに鳴ります (偶奇と 2 ビット目の組だけ)。一覧表示ではそれを完了音と「組」の手がかりにだけ使います。
 
 ## 確認音 (acknowledgment tones) — 交互ビット方式 (alternating-bit、0.3.0〜)
+(0.4.0 / 0.5.0 の送信側は下の「スロット」を固定せず共有キューで使います。音の意味は「番号 mod 4」のまま変わりません。)
 長さは 0.3.1 の受信機で 120 ms (間隔 60 ms)、0.3.0 は 80 ms (間隔 40 ms)。検出器はどちらも聞き取ります。周波数は 0.3.0 と同じ。
 
 | 音 | 意味 |
@@ -214,6 +245,25 @@ factor (0.62–1.23 measured), so modules alternated between e.g. 4 and 5 device
 mode draws every module as an integer number of device pixels, verified pixel-identical on screen at dpr 1/1.25/1.5/2.
 The old two-code mic-ack mode is still available as 「2枚・確認音」.
 
+## App 0.4.0 / PC sender 0.5.0 (English, short)
+- **Receiver decoder**: zxing-cpp 3.1.1 (Apache-2.0, AAR `io.github.zxing-cpp:android`) replaces Java ZXing decoding: QR only,
+  up to 255 symbols per frame, tryHarder, the camera's Y plane passed as an ALPHA_8 bitmap to `read(Bitmap)`. When a frame
+  yields nothing, a 2× bicubic upscale is tried at most every 400 ms (for codes below ~3 px/module; ~20 ms for 1080p on a
+  desktop JVM). The old Java decoder stays as a setting ("Engine: zxing-cpp / ZXing (old)", default zxing-cpp). QR
+  generation still uses ZXing core.
+- **DONE tone** at ~28 % of its former volume; ack tones unchanged. The web sender plays no sound.
+- **Two-code mic-ack: one shared queue** (sender 0.5.0, app sender 0.4.0): whichever code is acked first shows the next
+  unacknowledged chunk (0.3.x/0.4.0 used fixed even/odd lanes, so one lane could finish early and idle). The two chunks on
+  screen always have different ack tones; a tone that just left the screen is not reused for 200 ms (700 ms if its chunk was
+  ever shown next to a same-parity chunk), and an ack arriving < 250 ms after a chunk appeared is treated as a late
+  duplicate. Unread chunks are never skipped; an idle code mirrors the other code's chunk with another mask.
+- **Auto re-mask** (default on, 3 s): two-code mode redraws a code without ack with the next mask (then the next EC level);
+  after 8 masks the chunk goes back into the queue and is retried at the end. Grid mode (mic on) re-masks only codes whose
+  ack class (i mod 4) has not been heard on the current page; paging stays manual. Labels show the mask (`m3`, `↻` = auto,
+  `*` = clicked).
+- **Compatibility**: QT1 frames and tones are unchanged. The 0.5.0 web sender works with the 0.3.1 receiver app (it accepts
+  chunks in any order and acks by index mod 4); the 0.4.0 app works with older senders. Not tested on real devices.
+
 ## Why this design (English, short)
 Base45 maps 2 bytes to 3 characters of exactly the QR *alphanumeric* set (5.5 bits/char), ~97 % efficient vs. 75 % for
 base64 in byte mode — about 30 % more data per code. Every frame carries ID/total/CRC so reception can start anywhere;
@@ -241,10 +291,14 @@ node tools/acoustic-sim.js [sender.html] --trials 6 [--ackms 80|120] [--sens 1-5
                                # スピーカー→部屋→マイクの模擬経路で検出率・誤検出を計測 (旧版の html と比較可)
 sh tools/test-web-chrome.sh    # headless Chrome で Web 送信機を表示 → スクショからアプリの FrameDecoder で 2 枚読めるか等
 python3 tools/test-web-chrome.py out.png   # Playwright: 既定値 / 偽マイクで進まない / マイク拒否でも自動送りにならない /
-                                           # マイクテストでテスト音 5 つ / 小さい確認音 + ハムでの往復
+                                           # マイクテストでテスト音 5 つ / 小さい確認音 + ハムでの往復 (0.3.1 と 0.4.0 の受信機の
+                                           # 鳴らし方) / 0.5.0: 自動マスク変更・列に戻して最後に再表示
 node tools/test-grid.js [fixture]          # 0.4.0: マスクの付け替え = QR ライブラリ自身の出力 (全バージョン×8 マスク)、
                                            # 一覧のレイアウト不変条件 (1200 通り)、ZXing 比較用 fixture
 java MaskParity fixture                    # (tools/e2e) ペナルティ・最良マスク・モジュールが ZXing のエンコーダと一致、全マスクが同じ文字列に復号
+java -Dengine=cpp GridSim 1 0.5 page*.png  # (tools/e2e) 0.4.0: 一覧のスクショを zxing-cpp (CppBridge → zxcpp_bridge.py、
+                                           # Python の zxingcpp 3.1.1 = アプリの AAR と同じ C++) で読む。-Dupscale=1 で 2 倍拡大も
+java EngineBench list.tsv                  # (tools/e2e) 研究用ベンチマーク画像: Java ZXing / zxing-cpp / zxing-cpp+2倍拡大
 python3 tools/test-grid-chrome.py out.png  # 0.4.0 一覧表示: 窓の大きさ 8 通りでの配置・全チャンクちょうど 1 回・キー操作・
                                            # 画面の画素 = canvas (dpr 1〜2)・クリックで別の形でも同じ文字列・
                                            # 全ページのスクショを模擬カメラ → アプリの FrameDecoder + Assembler で復元し CRC 一致・完了音
@@ -265,14 +319,22 @@ Chrome E2E: 2 枚横並び / 縦並び / 1 枚 の画面をアプリのデコー
 マイク拒否でループモードと表示、ページ内の模擬受信機 (読み落とし・確認音の欠落あり) との音声往復で完了・内容一致・飛ばしなし。
 
 ## 既知の制限 / Known limitations
-- 速度の目安 (シミュレーション、20 KB・400 B チャンク・2 枚同時): 読み取り 90 %・確認音の欠落 10 % で約 1.7 KB/s
-  (理想条件 2.4 KB/s、1 枚表示 1.0 KB/s、読み取り 50 %・欠落 30 % で 1.0 KB/s)。実機の値は未計測。上限 2 MB。
+- 速度の目安 (シミュレーション、20 KB・400 B チャンク・2 枚同時、0.4.0 の共有キュー): 読み取り 90 %・確認音の欠落 10 % で
+  約 1.7 KB/s (理想条件 2.0 KB/s、1 枚表示 0.95 KB/s、読み取り 50 %・欠落 30 % で 1.0 KB/s。0.4.0 でシミュレーションの音の
+  再生モデルを実機の AckPlayer に合わせたため、0.3.1 の README の値 [理想 2.4 KB/s] とは直接比べられません)。実機の値は未計測。上限 2 MB。
 - 読み取りはカメラの性能・画面の反射・距離に左右されます。モアレが出るときは少し離すか角度を変えてください。
 - マイク確認モードは静かな場所向け。確認音が聞こえない環境 (音量 0、OS の音声処理、騒音) では **表示が進みません**
   (飛ばさない設計のため)。画面の案内に従い音量・向きを直すか、ループモードに切り替えてください (Web: ボタン、アプリ: マイクをオフ)。
 - 同じ確認音を出す別の機器が近くにあると、誤った確認で 1 枚先へ進むことがあり得ます。その場合も受信側に欠けが残るので完了音が
   来ず、全体の再確認周回 (確認音でのみ進む) で補われます (シミュレーションで確認)。
-- 片方のスロットの担当分が先に終わると、そのスロットは白表示で待ちます (最後の数枚は 1 枚表示と同じ速さ)。
+- (0.3.x まで) 片方のスロットの担当分が先に終わると、そのスロットは白表示で待っていました。0.4.0 / 0.5.0 の共有キューで解消
+  (ループモードは従来どおり偶数/奇数)。
+- アプリ 0.4.0 / Web 送信機 0.5.0 の変更 (zxing-cpp・完了音の音量・共有キュー・自動マスク変更) は **実機では未確認** です
+  (単体テスト・転送シミュレーション・Chrome での E2E・研究用ベンチマーク画像でのデスクトップ計測のみ)。
+- zxing-cpp のネイティブライブラリで APK が大きくなりました (release 約 1.5 MB、arm64-v8a と armeabi-v7a のみ。x86 端末は
+  debug 版のみ対応)。
+- 2 枚表示の canvas は今までどおり CSS で拡大縮小されます (一覧表示のような実ピクセル整数倍ではない)。モアレが出るときは
+  一覧表示を使うか、窓の大きさ・距離を変えてください。
 - 2 枚読むため受信カメラは 1920×1080 を使い、1 フレームのデコードは 1 枚のときより重くなります。
 - 0.3.0 以降の確認音は 0.2.0 以前と互換がありません (旧版の音は無視されます)。送受信とも 0.3.0 以降にしてください
   (0.3.0 と 0.3.1 は相互に使えます。0.3.0 の送信側は検出器が古いままなので、届きにくさは改善しません)。
@@ -287,6 +349,8 @@ Chrome E2E: 2 枚横並び / 縦並び / 1 枚 の画面をアプリのデコー
 
 ## ライセンス
 MIT © 2026 zmlworks — [LICENSE](LICENSE)。
-同梱・利用しているもの: ZXing core 3.5.3 (Apache-2.0、ソースはこのリポジトリに含まず Maven から取得し APK に同梱、
-全文 [LICENSE-APACHE-2.0.txt](LICENSE-APACHE-2.0.txt))、qrcode-generator 1.4.4 (MIT、`web/sender.html` に無改変で内蔵)、
+同梱・利用しているもの: **zxing-cpp 3.1.1** (Apache-2.0、© zxing-cpp authors、受信デコーダ。Maven の AAR
+`io.github.zxing-cpp:android` を APK に同梱、ソースは https://github.com/zxing-cpp/zxing-cpp)、Kotlin 標準ライブラリ 2.3.20
+(Apache-2.0、zxing-cpp の AAR が必要とするため同梱)、ZXing core 3.5.3 (Apache-2.0、ソースはこのリポジトリに含まず Maven から
+取得し APK に同梱、全文 [LICENSE-APACHE-2.0.txt](LICENSE-APACHE-2.0.txt))、qrcode-generator 1.4.4 (MIT、`web/sender.html` に無改変で内蔵)、
 Gradle Wrapper (Apache-2.0)。詳細は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。「QR コード」は (株)デンソーウェーブの登録商標です。

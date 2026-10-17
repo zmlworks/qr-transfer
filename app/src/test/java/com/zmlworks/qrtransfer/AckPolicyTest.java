@@ -41,7 +41,20 @@ public class AckPolicyTest {
         AckPolicy p = new AckPolicy();
         assertEquals(Tone.A0, p.onFrame(0, 0));
         assertEquals(Tone.A1, p.onFrame(2, 50));
-        assertEquals(Tone.A0, p.onFrame(0, 100));      // chunk 0 again (already received): ack again
+        assertEquals(-1, p.onFrame(0, 100));           // 0.4.0: same chunk, same tone within REACK_MS: no repeat
+        assertEquals(Tone.A0, p.onFrame(0, AckPolicy.REACK_MS));   // still in view later (duplicate): ack again
+    }
+
+    @Test public void sameParityPairDoesNotRetriggerEveryFrame() {
+        // the 0.4.0 sender's shared queue may show two even chunks (A0 + A1); 0.3.x re-acked both on every frame
+        AckPolicy p = new AckPolicy();
+        int played = 0;
+        for (long t = 0; t < 1400; t += 33) {
+            if (p.onFrame(8, t) >= 0) played++;
+            if (p.onFrame(10, t) >= 0) played++;
+        }
+        assertEquals(4, played);                       // each at 0 ms and once more after REACK_MS
+        assertEquals(Tone.A0, p.onFrame(12, 1400));    // a new chunk with an already used tone is acked at once
     }
 
     @Test public void doneRepeatsAtMostEveryTwoSeconds() {

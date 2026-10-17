@@ -15,8 +15,8 @@ android {
         applicationId 'com.zmlworks.qrtransfer'
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName '0.3.1'
+        versionCode 5
+        versionName '0.4.0'
     }
     signingConfigs {
         release {
@@ -31,8 +31,12 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix '.debug'
+            // + x86_64 so the debug APK also runs on an emulator
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64' }
         }
         release {
+            // zxing-cpp native library: phones only (64- and 32-bit ARM); other ABIs fall back to Java ZXing
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -51,9 +55,13 @@ android {
         disable 'GradleDependency', 'NewerVersionAvailable', 'OldTargetApi', 'AndroidGradlePluginVersion'
     }
     dependenciesInfo { includeInApk false; includeInBundle false }
+    // compress the zxing-cpp .so files in the APK (smaller download; extracted at install)
+    packaging { jniLibs { useLegacyPackaging true } }
 }
 
 dependencies {
-    implementation 'com.google.zxing:core:3.5.3'
+    implementation 'com.google.zxing:core:3.5.3'          // QR rendering (QrRender) + the Java fallback decoder
+    // zxing-cpp (Apache-2.0): QR decoding. Only BarcodeReader.read(Bitmap) is used, so CameraX is left out.
+    implementation('io.github.zxing-cpp:android:3.1.1') { exclude group: 'androidx.camera' }
     testImplementation 'junit:junit:4.13.2'
 }

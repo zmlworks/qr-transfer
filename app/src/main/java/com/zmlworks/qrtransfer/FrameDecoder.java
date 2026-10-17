@@ -24,7 +24,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Decodes up to two QR codes from one grey-scale camera frame (pure ZXing, testable on the JVM).
+ * Decodes up to two QR codes from one grey-scale camera frame (pure ZXing, testable on the JVM). Since 0.4.0 this is the
+ * fallback engine (setting 「ZXing(旧)」); the default is zxing-cpp ({@link CppEngine}).
  * <ol>
  *   <li>QRCodeMultiReader on the whole frame (finds every code whatever the layout/rotation);</li>
  *   <li>if nothing was found, the two halves are decoded separately — split across the long side and the short
@@ -34,7 +35,7 @@ import java.util.Set;
  *       first one's finder patterns cannot confuse the detector.</li>
  * </ol>
  */
-public final class FrameDecoder {
+public final class FrameDecoder implements QrEngine {
     private final QRCodeMultiReader multi = new QRCodeMultiReader();
     private final QRCodeReader single = new QRCodeReader();
     private final Map<DecodeHintType, Object> hints = new EnumMap<>(DecodeHintType.class);
@@ -66,8 +67,10 @@ public final class FrameDecoder {
         }
     }
 
+    @Override public String name() { return "ZXing (Java)"; }
+
     /** @param y luminance, row-major w×h */
-    public List<String> decode(byte[] y, int w, int h) {
+    @Override public List<String> decode(byte[] y, int w, int h) {
         frameNo++;
         Set<String> out = new LinkedHashSet<>();
         Hit last = null;

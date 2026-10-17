@@ -3,6 +3,9 @@
   QR分割転送 Web送信機 / QR split-transfer web sender  (QT1 protocol)
   Single file, fully offline: open this file in a desktop browser and point the phone's receiver at it.
   v0.4.0: 「一覧表示 (ページ)」 grid pages (default) + click-to-redraw (same payload, other mask); works with receiver app 0.3.1.
+  v0.5.0: two-code mic-ack mode takes chunks from ONE shared queue (whichever code is acked first shows the next unread
+          chunk; no more idle even/odd lane), automatic re-mask of codes that stay unread (both views), mask labels.
+          Same QT1 frames and ack tones: works with receiver app 0.3.1 and 0.4.0.
   Copyright (c) 2026 zmlworks — MIT License. Built by the AI assistant Grok Bot.
   Bundles "QR Code Generator for JavaScript" (c) 2009 Kazuhiko Arase — MIT License (see below).
 -->
@@ -11,7 +14,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;">
-<title>QR分割転送 — 送信 (QT1, v0.4.0)</title>
+<title>QR分割転送 — 送信 (QT1, v0.5.0)</title>
 <style>
   :root { --bg:#002218; --bg2:#00140E; --panel:#0A3226; --text:#C6CFC6; --dim:#7F8F86; --accent:#3D0105; --hi:#00A2E8; }
   * { box-sizing: border-box; }
@@ -39,6 +42,11 @@
     #codes canvas { flex:none; width:100%; max-width:min(92vw, 40vh); }
   }
   #codes canvas.idle { opacity:.15; }
+  #codes canvas { cursor:pointer; }
+  #codelabels { display:flex; gap:24px; width:100%; justify-content:center; font:13px ui-monospace, monospace; color:var(--dim); }
+  #codelabels span { flex:1 1 0; text-align:center; max-width:80vh; }
+  #codelabels span.auto { color:#FFB74D; }
+  #codelabels span.user { color:#4FC3F7; }
   #info { font:14px ui-monospace, monospace; }
   #status { color:var(--dim); font-size:13px; }
   #state { width:100%; max-width:900px; font:13px/1.5 ui-monospace, monospace; display:flex; flex-direction:column; gap:4px; }
@@ -82,6 +90,7 @@
   #gridarea canvas { position:absolute; image-rendering:crisp-edges; image-rendering:pixelated; cursor:pointer; }
   .glabel { position:absolute; font:11px/14px ui-monospace, monospace; color:#666; text-align:center; overflow:hidden; white-space:nowrap; pointer-events:none; }
   .glabel.user { color:#0057B8; font-weight:600; }
+  .glabel.auto { color:#B26A00; }
   #gridbar { position:absolute; left:0; right:0; bottom:0; height:70px; overflow:hidden; background:var(--bg2); color:var(--text); padding:4px 8px; font:13px/1.5 system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; }
   #gridbar .r1 { display:flex; gap:10px; align-items:center; white-space:nowrap; overflow:hidden; height:40px; }
   #gridbar .r2 { height:22px; line-height:22px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#FFB74D; }
@@ -98,7 +107,7 @@
 </style>
 </head>
 <body>
-<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.4.0)</small></h1><span id="status">準備完了 / ready</span></header>
+<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.5.0)</small></h1><span id="status">準備完了 / ready</span></header>
 <main>
 <section id="setup">
   <label class="opt" for="text">テキスト / Text</label>
@@ -107,15 +116,20 @@
   <div class="opt" id="fileinfo"><small></small></div>
   <fieldset class="opt" id="viewbox"><legend>表示方式 / display</legend>
     <label><input type="radio" name="view" id="vgrid" checked> 📄 一覧表示 (ページ) — 画面いっぱいに QR を並べ、読めたら次のページへ (PC 向け・既定) / grid pages (default)</label><br>
-    <label><input type="radio" name="view" id="vtwo"> 🎤 2枚・確認音 — 0.3.1 までと同じ方式 / two codes + ack tones (as in 0.3.1)</label>
+    <label><input type="radio" name="view" id="vtwo"> 🎤 2枚・確認音 — 読めた方に次のチャンクを表示 (共有キュー) / two codes + ack tones (shared queue)</label>
   </fieldset>
   <fieldset class="opt" id="gridopts"><legend>一覧表示の設定 / grid options</legend>
     <label title="1 モジュール (QR の最小の点) の大きさ。画面の実ピクセルの整数倍に丸めます / module size, rounded to whole device pixels">QRの大きさ <input type="range" id="msize" min="2" max="12" step="1" value="4"> <span id="msizev">4</span> px/モジュール</label>
     <label>余白 <select id="quiet"><option value="4" selected>4 (標準)</option><option value="3">3</option><option value="2">2</option></select> モジュール</label><br>
     <label><input type="checkbox" id="gridmic" checked> 🎤 受信側の完了音 (3050 Hz) を聞いて「受信完了」を表示 / listen for the receiver's DONE tone</label><br>
     <small>QR をクリック = 同じデータのまま別の形 (マスク 0〜7) に描き直し。Shift+クリック / 右クリック = 誤り訂正レベルを変更 (L→M→Q→H)。
-    ページ送り: ← → / PageUp PageDown / Space。読み取り順は自由です (受信側は番号で並べ替え、重複は無視)。</small>
+    ページ送り: ← → / PageUp PageDown / Space (自動では進みません)。読み取り順は自由です (受信側は番号で並べ替え、重複は無視)。
+    ↻ 自動マスク変更 (マイク使用時): このページで確認音の組 (i mod 4) がまだ聞こえていないコードを一定時間ごとに次のマスクで描き直します (ラベル「m3↻」)。</small>
   </fieldset>
+  <div class="row opt">
+    <label title="確認音が来ないコードを、同じデータのまま次のマスク (0〜7 の後は次の誤り訂正レベル) で描き直します。一覧表示ではマイク使用時、確認音の組 (i mod 4) がこのページでまだ聞こえていないコードだけ / redraw codes that stay unacknowledged with the next mask (then the next EC level)"><input type="checkbox" id="remask" checked> ↻ 読めないコードを自動でマスク変更 / auto re-mask slow codes</label>
+    <label>— <input type="number" id="remasksec" min="1" max="30" step="0.5" value="3" style="width:4.5em"> 秒ごと / s</label>
+  </div>
   <div class="row opt">
     <label>チャンク <select id="chunk"><option value="200">小 200 B</option><option value="400" selected>中 400 B</option><option value="700">大 700 B</option><option value="1000">特大 1000 B</option></select></label>
     <label>誤り訂正 <select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
@@ -136,15 +150,19 @@
     <button class="stop" id="stop" disabled>■</button>
   </div>
   <small class="opt">プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
-  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音 (v0.3.0〜、交互ビット): 受信側 (0.3.0 以降) は読んだチャンクごとに、
-  左(上)なら 1350 / 1700 Hz、右(下)なら 2050 / 2400 Hz を 1枚ごとに交互に鳴らし (A0/A1/B0/B1)、完了で 3050 Hz を長めに鳴らします。
-  マイク確認モード (既定) では、表示中のチャンクちょうどの確認音を聞いたコードだけが次へ進みます (タイムアウトで飛ばすことはありません。
-  古い確認音は無視)。マイクが使えなくても自動送りには切り替わりません — 自動送り (ループ) は上の選択か「ループに切替」ボタンでだけ選べます。
+  確認音: 受信側は読んだチャンク番号 i ごとに i mod 4 で決まる音 (A0 1350 / A1 1700 / B0 2050 / B1 2400 Hz) を鳴らし、完了で 3050 Hz を鳴らします。
+  2枚表示のマイク確認モード (v0.5.0): 2枚とも同じ「未確認チャンクの列」から取り、確認音が来た方のコードに次の未確認チャンクを表示します
+  (0.4.0 までの「左=偶数・右=奇数」の固定割り当ては廃止)。表示中の 2枚は必ず違う音になるよう選ぶので、どちらが読めたか音で区別できます。
+  直前の音の遅れて届いた重複や、表示直後すぎる音は「古い」として無視します。タイムアウトで飛ばすことはありません — 読めないコードは
+  自動で別のマスクに描き直し (↻)、8 回変えても読めなければ一旦列に戻して他のチャンクを先に出し、最後にもう一度表示します。
+  コードをクリック = 別のマスク、Shift+クリック / 右クリック = 誤り訂正レベルを変更。受信アプリ 0.3.1 / 0.4.0 のどちらでも使えます。
+  マイクが使えなくても自動送りには切り替わりません — 自動送り (ループ、従来どおり偶数/奇数) は上の選択か「ループに切替」ボタンでだけ選べます。
   送信前に「🎤 マイク診断」で受信アプリの「テスト音」が聞こえるか確かめてください。
-  / Mic-ack mode (default): a code advances only on the ack for exactly the chunk it shows (no timeouts, stale acks ignored). It never falls back to auto-advance by itself; loop is only chosen by you.</small>
+  / Two-code mic-ack mode: both codes take the next unacknowledged chunk from one shared queue; the two shown chunks always have different ack tones. A code advances only on the ack for exactly its chunk (no timeouts; late duplicates ignored). Slow codes are redrawn with the next mask (↻) and, after 8 masks, put back into the queue and retried at the end. Click = next mask, Shift/right-click = next EC level. Works with receiver 0.3.1 and 0.4.0.</small>
 </section>
 <section id="show">
   <div id="codes"><canvas id="qrA" width="10" height="10"></canvas><canvas id="qrB" width="10" height="10"></canvas></div>
+  <div id="codelabels"><span id="lblA"></span><span id="lblB"></span></div>
   <div id="info">—</div>
   <div id="state">
     <div id="mode"></div>
@@ -2864,23 +2882,67 @@ var QT1 = (function () {
     };
   }
 
-  // ---- sender pacing for 1 or 2 codes (line-by-line port of the app's SlotScheduler.java) ----
-  // loop mode: each slot cycles its chunks every period. ack mode: a slot advances ONLY on the ack tone of exactly the
-  // chunk it shows (alternating bit; stale acks ignored; no timeout). Verification pass only if all acked but no DONE.
-  var VERIFY_MS = 3000, SILENCE_WARN_MS = 5000, IDLE_WAKE_MS = 1000;
+  // ---- sender pacing for 1 or 2 codes (line-by-line port of the app's SlotScheduler.java, v0.5.0) ----
+  // loop mode: slot A cycles the even chunks, slot B the odd ones, every period (unchanged).
+  // ack mode (shared queue): both slots take the next not-yet-acked chunk from ONE queue; a slot advances ONLY on the
+  // ack tone of exactly the chunk it shows. The two shown chunks never share a tone; a tone that just left the screen
+  // is quarantined (200 ms; 700 ms if it was ever shown next to a same-parity chunk) and an ack faster than MIN_ACK_MS
+  // after showing is a late duplicate, so late/duplicate acks are ignored as stale; the other
+  // parity than the other slot's chunk is preferred. No timeout ever skips a chunk; requeue() puts a long-unread chunk
+  // back into the queue; mirror: an idle slot shows the other slot's chunk too. Verification pass if all acked, no DONE.
+  var VERIFY_MS = 3000, SILENCE_WARN_MS = 5000, IDLE_WAKE_MS = 1000, QUARANTINE_MS = 200, QUARANTINE_SAME_MS = 700, MIN_ACK_MS = 250;
   function Scheduler(total, slots, periodMs, ackMode) {
     slots = Math.min(slots, total);
-    var acked = new Array(total).fill(false), ackedCount = 0, rounds = 0, goodAcks = 0, staleAcks = 0;
-    var cur = [], shownAt = [], latency = -1, allAckedAt = -1, lastAckAt = -1, finished = false;
-    for (var k = 0; k < slots; k++) { cur.push(-1); shownAt.push(0); }
+    var acked = new Array(total).fill(false), ackedCount = 0, rounds = 0, goodAcks = 0, staleAcks = 0, requeues = 0;
+    var cur = [], shownAt = [], mirrored = [], paired = [], toneFreeAt = [0, 0, 0, 0], latency = -1, allAckedAt = -1, lastAckAt = -1, finished = false, mirror = false;
+    for (var k = 0; k < slots; k++) { cur.push(-1); shownAt.push(0); mirrored.push(false); paired.push(false); }
     function first(s) { return slots === 1 ? 0 : s; }
     function count(s) { return Math.floor((total - first(s) + slots - 1) / slots); }
-    function show(s, i, now) { cur[s] = i; shownAt[s] = now; }
+    function show(s, i, now) {
+      cur[s] = i; shownAt[s] = now; mirrored[s] = false; paired[s] = false;
+      var o = slots === 2 ? cur[1 - s] : -1;
+      if (i >= 0 && o >= 0 && o !== i && ((o ^ i) & 1) === 0) { paired[0] = true; paired[1] = true; }
+    }
     function mark(i) { if (i >= 0 && !acked[i]) { acked[i] = true; ackedCount++; } }
+    function onScreen(i) { for (var s = 0; s < slots; s++) if (cur[s] === i) return true; return false; }
+    function pick(s, skip, now) {
+      var other = slots === 2 ? cur[1 - s] : -1, otherTone = other >= 0 ? toneOf(other) : -1, fallback = -1;
+      for (var i = 0; i < total; i++) {
+        if (acked[i] || i === skip || onScreen(i)) continue;
+        var t = toneOf(i);
+        if (t === otherTone || now < toneFreeAt[t]) continue;
+        if (other < 0 || ((i ^ other) & 1) === 1) return i;
+        if (fallback < 0) fallback = i;
+      }
+      return fallback;
+    }
+    function fill(s, skip, now) {
+      var p = pick(s, skip, now);
+      if (p >= 0) { show(s, p, now); return true; }
+      if (cur[s] >= 0 && !mirrored[s]) return false;
+      var other = slots === 2 ? cur[1 - s] : -1;
+      if (mirror && other >= 0 && !mirrored[1 - s] && !acked[other]) {
+        if (cur[s] === other && mirrored[s]) return false;
+        cur[s] = other; shownAt[s] = now; mirrored[s] = true; paired[s] = false;
+        return true;
+      }
+      if (cur[s] < 0) return false;
+      show(s, -1, now);
+      return true;
+    }
+    function fillAll(now) { for (var s = 0; s < slots; s++) if (cur[s] < 0 || mirrored[s]) fill(s, -1, now); }
+    function quarantine(s, now) {
+      var i = cur[s];
+      if (i < 0) return;
+      var t = toneOf(i);
+      toneFreeAt[t] = Math.max(toneFreeAt[t], now + (paired[s] ? QUARANTINE_SAME_MS : QUARANTINE_MS));
+    }
     return {
       total: total, slots: slots, ackMode: ackMode, periodMs: periodMs,
-      start: function (now) { for (var s = 0; s < slots; s++) show(s, first(s), now); },
+      setMirror: function (on) { mirror = !!on; },
+      start: function (now) { if (ackMode) fillAll(now); else for (var s = 0; s < slots; s++) show(s, first(s), now); },
       shown: function (s) { return s < slots ? cur[s] : -1; },
+      isMirror: function (s) { return s < slots && mirrored[s]; },
       expectedTone: function (s) { return s < slots && cur[s] >= 0 ? toneOf(cur[s]) : -1; },
       waitingMs: function (s, now) { return s < slots && cur[s] >= 0 ? now - shownAt[s] : -1; },
       isAcked: function (i) { return acked[i]; },
@@ -2888,6 +2950,7 @@ var QT1 = (function () {
       rounds: function () { return rounds; },
       goodAcks: function () { return goodAcks; },
       staleAcks: function () { return staleAcks; },
+      requeues: function () { return requeues; },
       finished: function () { return finished; },
       latencyMs: function () { return Math.round(latency); },
       silent: function (now) {
@@ -2897,47 +2960,80 @@ var QT1 = (function () {
       },
       onAck: function (tone, now) {
         if (!ackMode || finished || tone < 0 || tone > B1) return false;
-        for (var s = 0; s < slots; s++) {
+        var c = -1, since = now, s;
+        for (s = 0; s < slots; s++) {
           if (cur[s] < 0 || toneOf(cur[s]) !== tone) continue;
-          mark(cur[s]);
-          goodAcks++;
-          var dt = now - shownAt[s];
-          latency = latency < 0 ? dt : latency * 0.7 + dt * 0.3;
-          lastAckAt = now;
-          var n = cur[s] + slots;
-          show(s, n < total ? n : -1, now);
-          if (ackedCount === total && allAckedAt < 0) allAckedAt = now;
-          return true;
+          c = cur[s]; since = Math.min(since, shownAt[s]);
         }
-        staleAcks++;
-        return false;
+        if (c < 0 || now - since < MIN_ACK_MS) { staleAcks++; return false; }   // too early = late duplicate
+        mark(c);
+        goodAcks++;
+        var dt = now - since;
+        latency = latency < 0 ? dt : latency * 0.7 + dt * 0.3;
+        lastAckAt = now;
+        for (s = 0; s < slots; s++) if (cur[s] === c) { quarantine(s, now); show(s, -1, now); }
+        fillAll(now);
+        if (ackedCount === total && allAckedAt < 0) allAckedAt = now;
+        return true;
+      },
+      requeue: function (s, now) {
+        if (!ackMode || finished || s >= slots || cur[s] < 0 || mirrored[s]) return false;
+        var c = cur[s], cur0 = cur.slice(), at0 = shownAt.slice(), free0 = toneFreeAt.slice(), mir0 = mirrored.slice(), pair0 = paired.slice(), k;
+        toneFreeAt[toneOf(c)] = now + QUARANTINE_SAME_MS;
+        for (k = 0; k < slots; k++) if (cur[k] === c) show(k, -1, now);
+        var p = pick(s, c, now);
+        if (p < 0) {
+          for (k = 0; k < slots; k++) { cur[k] = cur0[k]; shownAt[k] = at0[k]; mirrored[k] = mir0[k]; paired[k] = pair0[k]; }
+          for (k = 0; k < 4; k++) toneFreeAt[k] = free0[k];
+          return false;
+        }
+        show(s, p, now);
+        for (k = 0; k < slots; k++) if (cur[k] < 0) fill(k, c, now);
+        requeues++;
+        return true;
       },
       onDone: function () { finished = true; },
       tick: function (now) {
         if (finished) return false;
-        var s;
+        var s, changed = false;
         if (ackMode) {
           if (ackedCount === total && allAckedAt >= 0 && now - allAckedAt >= VERIFY_MS) {
             acked.fill(false); ackedCount = 0; allAckedAt = -1; rounds++;
-            for (s = 0; s < slots; s++) show(s, first(s), now);
+            for (s = 0; s < slots; s++) show(s, -1, now);
+            fillAll(now);
             return true;
           }
-          return false;
+          for (s = 0; s < slots; s++) if (cur[s] < 0 || mirrored[s]) changed = fill(s, -1, now) || changed;
+          return changed;
         }
-        var changed = false;
         for (s = 0; s < slots; s++) {
           if (now - shownAt[s] >= periodMs) { var n = cur[s] + slots; show(s, n < total ? n : first(s), now); changed = true; }
         }
         return changed;
       },
       nextDeadline: function (now) {
-        var d;
-        if (ackMode) d = allAckedAt >= 0 ? allAckedAt + VERIFY_MS : now + IDLE_WAKE_MS;
-        else { d = Infinity; for (var s = 0; s < slots; s++) d = Math.min(d, shownAt[s] + periodMs); }
+        var d, s;
+        if (ackMode) {
+          d = allAckedAt >= 0 ? allAckedAt + VERIFY_MS : now + IDLE_WAKE_MS;
+          var waiting = false;
+          for (s = 0; s < slots; s++) if (cur[s] < 0 || mirrored[s]) waiting = true;
+          if (waiting) for (var t = 0; t < 4; t++) if (toneFreeAt[t] > now) d = Math.min(d, toneFreeAt[t]);
+        } else { d = Infinity; for (s = 0; s < slots; s++) d = Math.min(d, shownAt[s] + periodMs); }
         return Math.max(d, now + 10);
       },
       step: function (s, d, now) {
         if (s >= slots) return;
+        if (ackMode) {
+          var other = slots === 2 ? cur[1 - s] : -1, c0 = cur[s] < 0 ? (d > 0 ? total - 1 : 0) : cur[s];
+          for (var k = 1; k <= total; k++) {
+            var j = (((c0 + k * Math.sign(d)) % total) + total) % total;
+            if (j === other || (other >= 0 && toneOf(j) === toneOf(other))) continue;
+            if (cur[s] >= 0 && j !== cur[s]) quarantine(s, now);
+            show(s, j, now);
+            return;
+          }
+          return;
+        }
         var c = cur[s] < 0 ? first(s) : cur[s], n = count(s), pos = Math.floor((c - first(s)) / slots);
         pos = ((pos + d) % n + n) % n;
         show(s, first(s) + pos * slots, now);
@@ -2972,7 +3068,11 @@ if (typeof module !== "undefined") module.exports = QT1;
                acked: sched ? sched.ackedCount() : 0, good: sched ? sched.goodAcks() : 0, stale: sched ? sched.staleAcks() : 0,
                finished: sched ? sched.finished() : false, frames: frames.slice(),
                mic: mic ? { settings: mic.settings, rate: mic.rate, sensitivity: mic.listener.sensitivity } : null,
-               events: events.slice(), testMode: testMode, view: gridMode ? "grid" : (sched ? "two" : ""), grid: gridSnapshot() };
+               events: events.slice(), testMode: testMode, view: gridMode ? "grid" : (sched ? "two" : ""), grid: gridSnapshot(),
+               mirror: sched ? [sched.isMirror(0), sched.isMirror(1)] : [false, false], requeues: sched ? sched.requeues() : 0,
+               masks: sched && two ? [0, 1].map(function (s) { var i = sched.shown(s); if (i < 0 || s >= sched.slots) return null;
+                 var c = twoChoice(s, i); return { chunk: i, mask: c.mask, ecl: c.ecl, k: c.k, user: !!two.user[i] }; }) : [null, null],
+               remasks: two ? two.remasks : 0, remask: { on: remaskOn(), ms: remaskMs() } };
     }
   };
 
@@ -2993,39 +3093,120 @@ if (typeof module !== "undefined") module.exports = QT1;
   $("msize").oninput = function () { $("msizev").textContent = this.value; };
 
   var version = 0;
-  function drawCode(cv, text) {
-    var qr = qrcode(0, $("ecc").value);
-    qr.addData(text, "Alphanumeric");
-    qr.make();
-    var n = qr.getModuleCount(), quiet = 4, scale = Math.max(2, Math.floor(800 / (n + 2 * quiet)));
-    var size = (n + 2 * quiet) * scale, g = cv.getContext("2d");
-    if (cv.width !== size) { cv.width = size; cv.height = size; }
-    g.fillStyle = "#fff"; g.fillRect(0, 0, size, size); g.fillStyle = "#000";
-    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
-    version = (n - 17) / 4;
+  // ---- v0.5.0: two-code rendering with selectable masks (same payload, other mask / EC level) ----
+  // per chunk a variant counter k: EC level = ECLS[(base + floor(k / 8)) % 4], mask = (lowest-penalty mask + k) % 8.
+  // A slot that mirrors the other slot's chunk (last chunks) draws it with mask +4 (+ its own re-mask count).
+  var two = null;
+  function newTwo() {
+    return { variant: {}, user: {}, extra: [0, 0], since: [0, 0], count: [0, 0], key: ["", ""], mirror: [false, false], cache: {}, remasks: 0,
+             base: QRSym.ECLS.indexOf($("ecc").value) };
+  }
+  function twoSym(i, ecl) {
+    var k = i + ":" + ecl;
+    if (!two.cache[k]) two.cache[k] = QRSym.variants(frames[i], ecl);
+    return two.cache[k];
+  }
+  /** what slot s draws for chunk i: { ecl, mask, sym, k } */
+  function twoChoice(s, i) {
+    var k = (two.variant[i] || 0) + (sched && sched.isMirror(s) ? 4 + two.extra[s] : 0);
+    var ecl = QRSym.ECLS[(two.base + Math.floor(k / 8)) % 4], sym = twoSym(i, ecl);
+    return { ecl: ecl, mask: (sym.best + k) % 8, sym: sym, k: k };
+  }
+  function drawCode(cv, s, i) {
+    var c = twoChoice(s, i), n = c.sym.n, quiet = 4, scale = Math.max(2, Math.floor(800 / (n + 2 * quiet)));
+    drawSym(cv, c.sym.mats[c.mask], n, scale, quiet);
+    cv.dataset.chunk = i; cv.dataset.mask = c.mask; cv.dataset.ecl = c.ecl;
+    cv.title = "チャンク #" + (i + 1) + " / マスク " + c.mask + " / 誤り訂正 " + c.ecl + " / v" + c.sym.version +
+      " — クリック = 次のマスク、Shift+クリック / 右クリック = 誤り訂正レベル / click: next mask, shift/right-click: next EC level";
+    version = c.sym.version;
+    return c;
+  }
+  function codeLabel(s, i) {
+    if (i < 0) return "";
+    var c = twoChoice(s, i), n = sched.isMirror(s) ? "=" : "";
+    return n + "#" + (i + 1) + "  m" + c.mask + (two.user[i] ? "*" : "") + ((two.variant[i] || 0) > 0 && !two.user[i] ? "↻" : "") +
+      (c.ecl !== $("ecc").value ? " " + c.ecl : "") + (ackMode ? "  " + QT1.NAMES[sched.expectedTone(s)] : "");
   }
   function render() {
     if (!sched) return;
-    var parts = [];
+    var parts = [], now = performance.now();
     for (var s = 0; s < 2; s++) {
-      var cv = canvases[s];
-      if (s >= sched.slots) { cv.style.display = "none"; continue; }
-      cv.style.display = "";
-      var i = sched.shown(s);
-      if (i !== drawn[s]) {
-        drawn[s] = i;
-        testLog.push({ t: Math.round(performance.now()), slot: s, show: i, acked: sched.ackedCount(), mode: ackMode ? "ack" : "loop" });
+      var cv = canvases[s], lbl = $(s === 0 ? "lblA" : "lblB");
+      if (s >= sched.slots) { cv.style.display = "none"; lbl.style.display = "none"; continue; }
+      cv.style.display = ""; lbl.style.display = "";
+      var i = sched.shown(s), key = i < 0 ? "idle" : i + ":" + (sched.isMirror(s) ? "m" : "") + twoChoice(s, i).k;
+      if (i !== drawn[s] || key !== two.key[s]) {
+        if (i !== drawn[s] || sched.isMirror(s) !== two.mirror[s]) {
+          // another chunk (or mirror on/off): the re-mask timer of this slot starts over
+          two.since[s] = now; two.count[s] = 0; two.extra[s] = 0;
+          two.mirror[s] = sched.isMirror(s);
+          key = i < 0 ? "idle" : i + ":" + (sched.isMirror(s) ? "m" : "") + twoChoice(s, i).k;
+        }
+        drawn[s] = i; two.key[s] = key;
+        var c = i < 0 ? null : drawCode(cv, s, i);
+        testLog.push({ t: Math.round(now), slot: s, show: i, acked: sched.ackedCount(), mode: ackMode ? "ack" : "loop",
+                       mask: c ? c.mask : -1, ecl: c ? c.ecl : "", mirror: sched.isMirror(s) });
         if (i < 0) { var g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height); cv.classList.add("idle"); }
-        else { drawCode(cv, frames[i]); cv.classList.remove("idle"); }
+        else cv.classList.remove("idle");
       }
-      parts.push((sched.slots === 2 ? (s === 0 ? "A " : "B ") : "") + (i < 0 ? "✓" : i + 1));
+      lbl.textContent = codeLabel(s, i);
+      lbl.className = i >= 0 && two.user[i] ? "user" : (i >= 0 && (two.variant[i] || 0) > 0 ? "auto" : "");
+      parts.push((sched.slots === 2 ? (s === 0 ? "A " : "B ") : "") + (i < 0 ? "✓" : (sched.isMirror(s) ? "=" : "") + (i + 1) + " m" + twoChoice(s, i).mask));
     }
+    // a chunk that left the screen does not need its cached symbols any more
+    var keep = {};
+    for (var s2 = 0; s2 < sched.slots; s2++) { var j = sched.shown(s2); if (j >= 0) keep[j] = 1; }
+    Object.keys(two.cache).forEach(function (k) { if (!keep[k.split(":")[0]]) delete two.cache[k]; });
     var line = parts.join("   ") + " / " + frames.length + "   v" + version + "   " + frames[0].slice(4, 12);
     if (ackMode) line += "   ✓" + sched.ackedCount() + (sched.latencyMs() >= 0 ? "  " + sched.latencyMs() + "ms" : "");
+    if (two.remasks) line += "   ↻" + two.remasks;
+    if (sched.requeues()) line += "   ⟲" + sched.requeues();
     if (sched.rounds() > 0) line += "   R" + (sched.rounds() + 1);
     $("info").textContent = line;
     renderState();
   }
+  function remaskOn() { return $("remask").checked; }
+  function remaskMs() { var v = Number($("remasksec").value); return Math.max(1000, Math.min(30000, (isFinite(v) && v > 0 ? v : 3) * 1000)); }
+  /** two-code mic-ack mode: per slot, a code without its ack for remaskMs() is redrawn with the next mask (then the next
+   *  EC level); after 8 re-masks of one showing the chunk goes back into the shared queue (sched.requeue) and is retried
+   *  later, while the slot serves other chunks. Never skips: a requeued chunk stays unacknowledged. */
+  function twoRemaskTick(now) {
+    if (!running || paused || !sched || !ackMode || !two || !remaskOn() || gridMode) return;
+    var ms = remaskMs(), changed = false;
+    for (var s = 0; s < sched.slots; s++) {
+      var i = sched.shown(s);
+      if (i < 0 || now - two.since[s] < ms) continue;
+      two.since[s] = now;
+      if (two.count[s] >= 8 && !sched.isMirror(s)) {
+        if (sched.requeue(s, now)) {
+          testLog.push({ t: Math.round(now), requeue: i, slot: s });
+          changed = true;
+          continue;
+        }
+      }
+      two.count[s]++;
+      if (sched.isMirror(s)) two.extra[s]++;
+      else { two.variant[i] = (two.variant[i] || 0) + 1; delete two.user[i]; }
+      two.remasks++;
+      testLog.push({ t: Math.round(now), remask: i, slot: s, k: twoChoice(s, i).k, mask: twoChoice(s, i).mask, ecl: twoChoice(s, i).ecl });
+      changed = true;
+    }
+    if (changed) { render(); schedule(); }
+  }
+  function onTwoClick(e) {
+    e.preventDefault();
+    if (!running || !sched || gridMode) return;
+    var s = this === canvases[0] ? 0 : 1, i = sched.shown(s);
+    if (i < 0) return;
+    var k = two.variant[i] || 0;
+    if (e.shiftKey || e.type === "contextmenu" || e.button === 2) k = (Math.floor(k / 8) + 1) * 8;   // next EC level, its best mask
+    else k++;
+    two.variant[i] = k; two.user[i] = true;
+    two.since[s] = performance.now(); two.count[s] = 0;
+    testLog.push({ t: Math.round(performance.now()), redraw: i, slot: s, mask: twoChoice(s, i).mask, ecl: twoChoice(s, i).ecl });
+    render();
+  }
+  canvases.forEach(function (cv) { cv.addEventListener("click", onTwoClick); cv.addEventListener("contextmenu", onTwoClick); });
   function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
   /** mode badge, per-slot state, tone lamps, mic level, silence hint, diagnostics */
   function renderState() {
@@ -3040,8 +3221,9 @@ if (typeof module !== "undefined") module.exports = QT1;
       var i = sched.shown(s), label = sched.slots === 2 ? (s === 0 ? "A (左/上)" : "B (右/下)") : "code";
       if (!ackMode) html += "<div>" + label + ": #" + (i + 1) + "</div>";
       else if (i < 0) html += "<div>" + label + ": すべて確認済み / all acked ✓</div>";
-      else html += "<div>" + label + ": #" + (i + 1) + " — <b>" + QT1.NAMES[sched.expectedTone(s)] + "</b> 待ち / waiting " +
-        (sched.waitingMs(s, now) / 1000).toFixed(1) + " s</div>";
+      else html += "<div>" + label + ": #" + (i + 1) + (two ? " m" + twoChoice(s, i).mask : "") + (sched.isMirror(s) ? " (もう一方と同じチャンク / same chunk as the other code)" : "") +
+        " — <b>" + QT1.NAMES[sched.expectedTone(s)] + "</b> 待ち / waiting " + (sched.waitingMs(s, now) / 1000).toFixed(1) + " s" +
+        (two && remaskOn() && two.count[s] ? "  ↻" + two.count[s] + (two.count[s] >= 8 ? " → 列に戻す / back to queue" : "") : "") + "</div>";
     }
     $("slots").innerHTML = html;
     var live = mic ? mic.listener.lastClass : -1;
@@ -3060,6 +3242,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     $("counts").textContent = ackMode ? "✓" + sched.goodAcks() + " 一致 / matched   ✗" + sched.staleAcks() + " 古い・無関係 / stale ignored" +
       (lastHeard >= 0 && now - lastHeardAt < 3000 ? "   last: " + QT1.NAMES[lastHeard] + (lastHeardOk ? " ✓" : " (stale)") : "") : "";
     var hint = "";
+    if (ackMode && sched.requeues() && !sched.silent(now)) hint = "⟲ 読めなかったチャンクを列に戻しました (" + sched.requeues() + " 回) — 後でもう一度表示します / unread chunks were put back into the queue and come again later";
     if (ackMode && micProblem) hint = "⚠ マイクを許可するか、「🔁 ループに切替」で自動送りにしてください / allow the microphone, or press “switch to loop” for auto-advance";
     else if (ackMode && sched.silent(now)) hint = "⚠ しばらく確認音が届きません — 表示を続けています (飛ばしません)。下の診断で 5 つの音のレベルを確認 (受信側の音量・向き・感度) / no matching ack for a while — still showing, nothing skipped; check the bars below (receiver volume, aim, sensitivity)";
     $("hint").textContent = hint;
@@ -3213,7 +3396,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     if (mic && !testMode) closeMic();
     ackMode = false; loopReason = reason; micProblem = "";
     sched = QT1.Scheduler(frames.length, sched.slots, sched.periodMs, false);
-    drawn = [-2, -2]; sched.start(performance.now());
+    drawn = [-2, -2]; two.key = ["", ""]; sched.start(performance.now());
     render(); schedule();
   }
 
@@ -3227,11 +3410,11 @@ if (typeof module !== "undefined") module.exports = QT1;
   function gridSnapshot() {
     if (!grid || !grid.L) return null;
     var L = grid.L, shown = QTGrid.pageChunks(L, frames.length, grid.page), masks = {};
-    shown.forEach(function (i) { var c = curChoice(i); masks[i] = { mask: c.mask, ecl: c.ecl, user: !!grid.choice[i] }; });
+    shown.forEach(function (i) { var c = curChoice(i); masks[i] = { mask: c.mask, ecl: c.ecl, user: !!grid.choice[i], auto: c.auto || 0 }; });
     return { page: grid.page, pages: L.pages, perPage: L.perPage, cols: L.cols, rows: L.rows, mpx: L.mpx, side: L.side,
              labelH: L.labelH, ox: L.ox, oy: L.oy, shrunk: L.shrunk, N: grid.N, quiet: grid.quiet, ecl: grid.ecl,
              dpr: grid.dpr, W: grid.W, H: grid.H, barCss: grid.barCss, msize: grid.msize, shown: shown, masks: masks, done: grid.done,
-             heard: grid.heard.slice(), drawn: grid.drawn.slice() };
+             heard: grid.heard.slice(), drawn: grid.drawn.slice(), remasks: grid.remasks };
   }
   /** cached 8-mask variants of chunk i at EC level ecl (only for the codes on screen) */
   function symOf(i, ecl) {
@@ -3239,11 +3422,31 @@ if (typeof module !== "undefined") module.exports = QT1;
     if (!grid.cache[k]) grid.cache[k] = QRSym.variants(frames[i], ecl);
     return grid.cache[k];
   }
-  /** what chunk i is drawn as: user's choice, else the global EC level with the lowest-penalty mask */
+  /** what chunk i is drawn as: user's choice, else (v0.5.0) the automatic re-mask step k (next mask, after 8 masks the
+   *  next EC level), else the global EC level with the lowest-penalty mask */
   function curChoice(i) {
     var c = grid.choice[i];
     if (c) return c;
-    return { ecl: grid.ecl, mask: symOf(i, grid.ecl).best };
+    var k = grid.auto[i] || 0;
+    if (!k) return { ecl: grid.ecl, mask: symOf(i, grid.ecl).best };
+    var ecl = QRSym.ECLS[(QRSym.ECLS.indexOf(grid.ecl) + Math.floor(k / 8)) % 4];
+    return { ecl: ecl, mask: (symOf(i, ecl).best + k) % 8, auto: k };
+  }
+  /** v0.5.0 auto re-mask (mic on): after remaskMs() on a page, every code whose ack class (i mod 4) was not heard on this
+   *  page yet — i.e. probably not read — is redrawn with the next mask; codes the user clicked are left alone. Paging
+   *  stays manual. */
+  function gridRemaskTick(now) {
+    if (!running || !gridMode || !grid || !grid.L || grid.done || !remaskOn() || !mic || micProblem) return;
+    if (now - grid.since < remaskMs()) return;
+    grid.since = now;
+    var n = 0;
+    grid.drawn.forEach(function (i, slot) {
+      if (grid.heard[QT1.toneOf(i)] || grid.choice[i]) return;
+      grid.auto[i] = (grid.auto[i] || 0) + 1;
+      drawCell(i, slot);
+      n++;
+    });
+    if (n) { grid.remasks += n; testLog.push({ t: Math.round(now), gridRemask: n, page: grid.page }); gridBar(); }
   }
   function gridLayout() {
     var dpr = window.devicePixelRatio || 1, bar = $("gridbar"), barCss = bar.offsetHeight;
@@ -3284,9 +3487,9 @@ if (typeof module !== "undefined") module.exports = QT1;
     lb.style.left = x0 / dpr + "px"; lb.style.top = (y0 + L.side) / dpr + "px";
     lb.style.width = L.side / dpr + "px"; lb.style.height = L.labelH / dpr + "px";
     var user = !!grid.choice[i];
-    lb.textContent = "#" + (i + 1) + "  m" + ch.mask + (user ? "*" : "") + (ch.ecl !== grid.ecl ? " " + ch.ecl : "") + (mpx < L.mpx ? " (" + mpx + "px)" : "");
-    lb.className = "glabel" + (user ? " user" : "");
-    lb.title = "チャンク #" + (i + 1) + " / マスク " + ch.mask + (user ? " (クリックで変更済み)" : " (ペナルティ最小)") + " / 誤り訂正 " + ch.ecl + " / v" + v.version;
+    lb.textContent = "#" + (i + 1) + "  m" + ch.mask + (user ? "*" : (ch.auto ? "↻" : "")) + (ch.ecl !== grid.ecl ? " " + ch.ecl : "") + (mpx < L.mpx ? " (" + mpx + "px)" : "");
+    lb.className = "glabel" + (user ? " user" : (ch.auto ? " auto" : ""));
+    lb.title = "チャンク #" + (i + 1) + " / マスク " + ch.mask + (user ? " (クリックで変更済み)" : ch.auto ? " (自動で変更 " + ch.auto + " 回)" : " (ペナルティ最小)") + " / 誤り訂正 " + ch.ecl + " / v" + v.version;
   }
   function gridRender() {
     var L = grid.L, area = $("gridarea"), shown = QTGrid.pageChunks(L, frames.length, grid.page);
@@ -3319,7 +3522,8 @@ if (typeof module !== "undefined") module.exports = QT1;
     $("grange").textContent = shown.length ? "#" + (shown[0] + 1) + "–#" + (shown[shown.length - 1] + 1) + " / " + frames.length : "";
     $("gmsizev").textContent = grid.msize;
     $("ginfo").textContent = L.perPage + "枚/ページ (" + L.cols + "×" + L.rows + ")  v" + (grid.N - 17) / 4 + "-" + grid.ecl + "  " + L.mpx + " px/モジュール" +
-      (grid.dpr !== 1 ? " (×" + Math.round(grid.dpr * 100) / 100 + ")" : "") + "  ID " + frames[0].slice(4, 12);
+      (grid.dpr !== 1 ? " (×" + Math.round(grid.dpr * 100) / 100 + ")" : "") + "  ID " + frames[0].slice(4, 12) +
+      (grid.remasks ? "  ↻" + grid.remasks : "");
     // tones heard while this page is shown (a tone only identifies i mod 4, never the code itself)
     var cls = [false, false, false, false], h = "";
     shown.forEach(function (i) { cls[QT1.toneOf(i)] = true; });
@@ -3346,7 +3550,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     if (!grid || !grid.L) return;
     p = Math.max(0, Math.min(grid.L.pages - 1, p));
     if (p === grid.page && grid.drawn.length) return;
-    grid.page = p; grid.heard = [false, false, false, false];
+    grid.page = p; grid.heard = [false, false, false, false]; grid.since = performance.now();
     gridRender();
   }
   function onCodeClick(e) {
@@ -3400,7 +3604,8 @@ if (typeof module !== "undefined") module.exports = QT1;
     if (!data) { setStatus("送るデータがありません / nothing to send"); return; }
     running = true; gridMode = true; ackMode = false; sched = null; micProblem = ""; testLog.length = 0;
     var ecl = $("ecc").value;
-    grid = { page: 0, L: null, choice: {}, cache: {}, heard: [false, false, false, false], done: false, drawn: [],
+    grid = { page: 0, L: null, choice: {}, auto: {}, cache: {}, heard: [false, false, false, false], done: false, drawn: [],
+             since: performance.now(), remasks: 0,
              ecl: ecl, quiet: Number($("quiet").value), msize: Number($("msize").value), N: QRSym.maxModules(frames, ecl),
              canvases: [], labels: [] };
     $("gridarea").innerHTML = ""; $("gdone").hidden = true;
@@ -3460,7 +3665,8 @@ if (typeof module !== "undefined") module.exports = QT1;
       catch (e) { mic = null; micProblem = "マイク使用不可 / mic unavailable: " + (e.name || e.message); showMicInfo(null); }
     }
     sched = QT1.Scheduler(frames.length, $("two").checked ? 2 : 1, 1000 / Number($("fps").value), ackMode);
-    drawn = [-2, -2];
+    sched.setMirror(ackMode);   // the last chunk(s): the idle code shows the other code's chunk with another mask
+    drawn = [-2, -2]; two = newTwo();
     sched.start(performance.now());
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = false; });
     $("start").disabled = true;
@@ -3469,7 +3675,13 @@ if (typeof module !== "undefined") module.exports = QT1;
     render(); schedule();
     startUi();
   }
-  function startUi() { clearInterval(uiTimer); uiTimer = setInterval(renderState, 100); }
+  function startUi() { clearInterval(uiTimer); uiTimer = setInterval(uiTick, 100); }
+  function uiTick() {
+    var now = performance.now();
+    twoRemaskTick(now);
+    gridRemaskTick(now);
+    renderState();
+  }
   function stop() {
     running = false; clearTimeout(timer);
     if (gridMode) stopGrid();

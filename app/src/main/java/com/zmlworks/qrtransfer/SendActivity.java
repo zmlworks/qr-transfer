@@ -39,9 +39,10 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Sender: text or file -> QT1 frames -> animated QR codes, two at a time (slot A: even chunks, slot B: odd chunks).
- * With "advance on tones" (microphone, the default) each slot advances ONLY when the receiver's alternating-bit ack for
- * exactly the shown chunk is heard (no timeout; stale acks are ignored) and the transfer stops on the DONE tone.
+ * Sender: text or file -> QT1 frames -> animated QR codes, two at a time. With "advance on tones" (microphone, the
+ * default) both slots take chunks from one shared queue ({@link SlotScheduler}, 0.4.0) and each slot advances ONLY when
+ * the receiver's ack for exactly the shown chunk is heard (no timeout; stale acks are ignored); the transfer stops on
+ * the DONE tone. In loop mode slot A cycles the even chunks and slot B the odd ones (unchanged).
  * 0.3.1: there is no automatic fallback to the loop (auto-advance) any more — if the microphone is refused, cannot be
  * opened or stops, the codes stay put and the screen says why; the loop is only used when the user picks it (option
  * off, or the "loop" button). The active mode, per-slot state, the live per-tone levels and the last detected tone are

@@ -47,7 +47,8 @@ import java.util.Locale;
 import java.util.zip.DataFormatException;
 
 /**
- * Receiver: Camera2 preview + ZXing decode of each frame, progress grid, CRC check, save/share.
+ * Receiver: Camera2 preview + QR decode of each frame (0.4.0: zxing-cpp by default, Java ZXing selectable as the old
+ * engine; optional 2× retry for very small codes — {@link DecodePipeline}), progress grid, CRC check, save/share.
  * Plays the ack tones ({@link AckPlayer}) and shows each tone it played, the media volume and where the sound goes;
  * "test tones" plays A0, A1, B0, B1, DONE so the sender's microphone can be checked before a transfer.
  */
@@ -57,7 +58,9 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     private AutoFitTextureView preview;
     private TextView progress, missing, resultInfo, resultText, ackStatus;
     private ChunkGridView grid;
-    private CheckBox beep;
+    private CheckBox beep, upscaleBox;
+    private Button engineBtn;
+    private TextView decodeStatus;
     private View resultPanel, scanPanel;
 
     private HandlerThread camThread;
@@ -69,7 +72,11 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
 
     // decoder state: camera thread only
     private final Protocol.Assembler asm = new Protocol.Assembler();
-    private final FrameDecoder decoder = new FrameDecoder();
+    static final String PREFS = "receiver", PREF_ENGINE = "engine", PREF_UPSCALE = "upscale";
+    static final String ENGINE_CPP = "cpp", ENGINE_JAVA = "java";
+    private final FrameDecoder javaEngine = new FrameDecoder();
+    private CppEngine cppEngine;           // null when the native library is not available on this device
+    private DecodePipeline pipe;
     private final AckPolicy policy = new AckPolicy();
     private String completedId;
     private long completedAt;
@@ -102,6 +109,29 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
         resultInfo = findViewById(R.id.result_info);
         resultText = findViewById(R.id.result_text);
         beep.setOnCheckedChangeListener((v, on) -> { beepOn = on; renderAckStatus(); });
+        // decoder engine (0.4.0): zxing-cpp (default) or the 0.3.x Java ZXing decoder
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        cppEngine = CppEngine.create();
+        boolean wantCpp = ENGINE_CPP.equals(prefs.getString(PREF_ENGINE, ENGINE_CPP));
+        pipe = new DecodePipeline(wantCpp && cppEngine != null ? cppEngine : javaEngine, prefs.getBoolean(PREF_UPSCALE, true));
+        engineBtn = findViewById(R.id.engine);
+        upscaleBox = findViewById(R.id.upscale);
+        decodeStatus = findViewById(R.id.decode_status);
+        upscaleBox.setChecked(pipe.upscale());
+        engineBtn.setOnClickListener(v -> {
+            boolean toCpp = pipe.engine() != cppEngine;
+            if (toCpp && cppEngine == null) { Toast.makeText(this, R.string.engine_cpp_unavailable, Toast.LENGTH_LONG).show(); return; }
+            QrEngine e = toCpp ? cppEngine : javaEngine;
+            pipe.setEngine(e);   // volatile; the camera thread picks it up with its next frame
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_ENGINE, toCpp ? ENGINE_CPP : ENGINE_JAVA).apply();
+            renderEngine();
+        });
+        upscaleBox.setOnCheckedChangeListener((v, on) -> {
+            pipe.setUpscale(on);
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_UPSCALE, on).apply();
+            renderEngine();
+        });
+        renderEngine();
         findViewById(R.id.copy).setOnClickListener(v -> copy());
         findViewById(R.id.save).setOnClickListener(v -> saveAs());
         findViewById(R.id.share).setOnClickListener(v -> share());
@@ -247,7 +277,7 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
             if (yBuf == null || yBuf.length != w * h) yBuf = new byte[w * h];
             if (rs == w) buf.get(yBuf, 0, w * h);
             else for (int y = 0; y < h; y++) { buf.position(y * rs); buf.get(yBuf, y * w, w); }
-            List<String> texts = decoder.decode(yBuf, w, h);   // up to two codes (slot A + slot B)
+            List<String> texts = pipe.decode(yBuf, w, h, now);   // every code in the frame (zxing-cpp: up to 255)
             for (String t : texts) onText(t, now);
         } finally { img.close(); }
     }
@@ -306,8 +336,24 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     }
 
     private final Runnable statusLoop = new Runnable() {
-        @Override public void run() { renderAckStatus(); ui.postDelayed(this, 1000); }
+        @Override public void run() { renderAckStatus(); renderEngine(); ui.postDelayed(this, 1000); }
     };
+
+    /** engine button label + decode statistics (ms per frame, codes in the last frame, 2× retries) */
+    private void renderEngine() {
+        if (engineBtn == null || pipe == null) return;
+        boolean cpp = pipe.engine() == cppEngine && cppEngine != null;
+        engineBtn.setText(getString(R.string.engine_label, getString(cpp ? R.string.engine_cpp : R.string.engine_java)));
+        upscaleBox.setEnabled(cpp);
+        StringBuilder b = new StringBuilder();
+        if (cppEngine == null) b.append(getString(R.string.engine_cpp_unavailable)).append('\n');
+        if (pipe.frames() > 0) {
+            b.append(getString(R.string.decode_stats, pipe.engine().name(), pipe.avgMs(), pipe.lastCount(), pipe.frames(), pipe.codes()));
+            if (cpp && pipe.upscale() && pipe.upscaleTries() > 0)
+                b.append('\n').append(getString(R.string.upscale_stats, pipe.upscaleTries(), pipe.upscaleHits(), pipe.avgUpscaleMs()));
+        }
+        decodeStatus.setText(b);
+    }
 
     /** last tone played, count, media volume, and a warning when the sound will not reach the sender */
     private void renderAckStatus() {

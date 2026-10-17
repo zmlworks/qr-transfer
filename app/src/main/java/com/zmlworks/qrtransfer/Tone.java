@@ -5,7 +5,8 @@ package com.zmlworks.qrtransfer;
  * <p>Alternating-bit acks: every chunk is acknowledged by the tone of (slot, parity) — slot = index &amp; 1
  * (A = top/left = even chunks, B = bottom/right = odd chunks), parity = (index &gt;&gt; 1) &amp; 1 (position within the
  * slot, alternating 0/1). So the tone tells the sender exactly which of two consecutive chunks of a slot was read
- * (index mod 4):
+ * (index mod 4). Since 0.4.0 the sender takes chunks for both codes from one shared queue and only keeps the two shown
+ * chunks on different tones; the tone is still simply index mod 4, so 0.3.x receivers and senders interoperate:
  * <pre>
  *   A0 1350 Hz  chunk ≡ 0 (mod 4)      B0 2050 Hz  chunk ≡ 1 (mod 4)
  *   A1 1700 Hz  chunk ≡ 2 (mod 4)      B1 2400 Hz  chunk ≡ 3 (mod 4)
@@ -47,6 +48,8 @@ public final class Tone {
     public static final double[] HZ = {1350, 1700, 2050, 2400, 3050};
     public static final String[] NAMES = {"A0", "A1", "B0", "B1", "DONE"};
     public static final int ACK_MS = 120, DONE_MS = 400, GAP_MS = 60;
+    /** 0.4.0: the DONE tone is played at this fraction of the ack amplitude (−11 dB; acks unchanged) */
+    public static final double DONE_GAIN = 0.28;
     public static final int BLOCK = 256;                       // 16 ms at 16 kHz (62.5 Hz/bin)
     public static final int ACK_BLOCKS = 3, DONE_BLOCKS = 10;  // blocks needed: 48 ms / 160 ms
     /** neighbour probes (Hz either side): a voice's harmonic comb (f0 85–300 Hz) puts energy on one of them */

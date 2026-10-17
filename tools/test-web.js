@@ -61,14 +61,16 @@ const QT1 = ctx.QT1;
 
   // scheduler: random event script; the Java test replays it on SlotScheduler and must see the same states
   let script = "";
-  for (const [total, slots, ack] of [[9, 2, true], [10, 1, true], [7, 2, false], [1, 2, true], [2, 2, true], [13, 2, true]]) {
+  for (const [total, slots, ack, mirror] of [[9, 2, true, 0], [10, 1, true, 0], [7, 2, false, 0], [1, 2, true, 0], [2, 2, true, 0], [13, 2, true, 0],
+                                              [11, 2, true, 1], [5, 2, true, 1], [3, 2, true, 1], [40, 2, true, 1]]) {
     const S = QT1.Scheduler(total, slots, 250, ack);
+    S.setMirror(!!mirror);
     let t = 0;
     S.start(t);
-    script += `#sched ${total} ${slots} ${ack ? 1 : 0}\n`;
-    const state = () => `${S.shown(0)} ${S.shown(1)} ${S.expectedTone(0)} ${S.expectedTone(1)} ${S.ackedCount()} ${S.rounds()} ${S.goodAcks()} ${S.staleAcks()} ${S.latencyMs()} ${S.silent(t) ? 1 : 0} ${S.nextDeadline(t)}`;
+    script += `#sched ${total} ${slots} ${ack ? 1 : 0} ${mirror}\n`;
+    const state = () => `${S.shown(0)} ${S.shown(1)} ${S.expectedTone(0)} ${S.expectedTone(1)} ${S.ackedCount()} ${S.rounds()} ${S.goodAcks()} ${S.staleAcks()} ${S.latencyMs()} ${S.silent(t) ? 1 : 0} ${S.nextDeadline(t)} ${S.isMirror(0) ? 1 : 0}${S.isMirror(1) ? 1 : 0} ${S.requeues()}`;
     script += `start ${t} -> ${state()}\n`;
-    for (let k = 0; k < 400; k++) {
+    for (let k = 0; k < 500; k++) {
       t += Math.floor(rnd() * 400);
       const r = rnd();
       if (r < 0.6) {   // half the time the right tone for a shown chunk, otherwise any tone (mostly stale)
@@ -76,8 +78,12 @@ const QT1 = ctx.QT1;
         const tone = rnd() < 0.5 && e >= 0 ? e : Math.floor(rnd() * 4);
         const c = S.onAck(tone, t); script += `ack ${tone} ${t} ${c ? 1 : 0} -> ${state()}\n`;
       }
-      else if (r < 0.98) { const c = S.tick(t); script += `tick ${t} ${c ? 1 : 0} -> ${state()}\n`; }
+      else if (r < 0.93) { const c = S.tick(t); script += `tick ${t} ${c ? 1 : 0} -> ${state()}\n`; }
+      else if (r < 0.97) { const s = Math.floor(rnd() * 2), c = S.requeue(s, t); script += `requeue ${s} ${t} ${c ? 1 : 0} -> ${state()}\n`; }
       else { const s = Math.floor(rnd() * 2), d = rnd() < 0.5 ? -1 : 1; S.step(s, d, t); script += `step ${s} ${d} ${t} -> ${state()}\n`; }
+      // invariant (ack mode): the two shown chunks never share a tone unless one mirrors the other
+      if (ack && slots === 2 && S.shown(0) >= 0 && S.shown(1) >= 0 && S.shown(0) !== S.shown(1))
+        assert.notStrictEqual(S.expectedTone(0), S.expectedTone(1), "two shown chunks share a tone");
     }
   }
   fs.writeFileSync(path.join(__dirname, "..", "app", "src", "test", "resources", "web_sched.txt"), script);

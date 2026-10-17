@@ -83,6 +83,40 @@
             android:buttonTint="@color/hi"
             android:checked="true"
             android:text="@string/beep" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="10dp">
+
+            <Button
+                android:id="@+id/engine"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textAllCaps="false" />
+
+            <CheckBox
+                android:id="@+id/upscale"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:buttonTint="@color/hi"
+                android:text="@string/upscale" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/decode_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="4dp"
+            android:textColor="@color/dim"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <LinearLayout
