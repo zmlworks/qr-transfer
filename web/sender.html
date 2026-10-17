@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;">
-<title>QR分割転送 — 送信 (QT1, v0.3.0)</title>
+<title>QR分割転送 — 送信 (QT1, v0.3.1)</title>
 <style>
   :root { --bg:#002218; --bg2:#00140E; --panel:#0A3226; --text:#C6CFC6; --dim:#7F8F86; --accent:#3D0105; --hi:#00A2E8; }
   * { box-sizing: border-box; }
@@ -53,13 +53,28 @@
   #meterbox { width:120px; height:8px; background:var(--bg2); border:1px solid #1E4A3C; display:inline-block; vertical-align:middle; }
   #meterbar { height:100%; width:0; background:var(--hi); }
   #hint { color:#FFB74D; }
+  fieldset { border:1px solid #1E4A3C; border-radius:4px; padding:6px 10px; color:var(--dim); }
+  #fpsbox.off { opacity:.4; }
+  #mode.warn { background:#5A1A12; color:#FFD7CC; border:1px solid #E5533D; }
+  #diag { width:100%; max-width:900px; font:12px/1.45 ui-monospace, monospace; border:1px solid #1E4A3C; border-radius:4px; padding:6px 8px; display:flex; flex-direction:column; gap:4px; }
+  #diag select, #diag button { padding:2px 8px; font-size:12px; }
+  #micinfo.bad { color:#FF8A65; }
+  .bar { display:grid; grid-template-columns: 9.5em 1fr 12em; gap:8px; align-items:center; }
+  .bar .track { position:relative; height:10px; background:var(--bg2); border:1px solid #1E4A3C; }
+  .bar .fill { position:absolute; left:0; top:0; bottom:0; background:#2F6F8F; }
+  .bar .fill.on { background:#2E7D32; }
+  .bar .fl { position:absolute; top:-2px; bottom:-2px; width:2px; background:#FFB74D; }
+  .bar .th { position:absolute; top:-2px; bottom:-2px; width:1px; background:#E5533D; opacity:.8; }
+  .tchk { padding:0 7px; margin-right:4px; border-radius:8px; border:1px solid #1E4A3C; color:var(--dim); }
+  .tchk.ok { background:#2E7D32; color:#fff; }
+  #evlog { white-space:pre; color:var(--text); max-height:9.5em; overflow:hidden; }
   small { color:var(--dim); }
   body.running .opt { display:none; }   /* while sending: only the controls, so both codes fit the screen */
   body.running #setup { flex:0 0 auto; }
 </style>
 </head>
 <body>
-<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.3.0)</small></h1><span id="status">準備完了 / ready</span></header>
+<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.3.1)</small></h1><span id="status">準備完了 / ready</span></header>
 <main>
 <section id="setup">
   <label class="opt" for="text">テキスト / Text</label>
@@ -68,12 +83,13 @@
   <div class="opt" id="fileinfo"><small></small></div>
   <div class="row opt">
     <label>チャンク <select id="chunk"><option value="200">小 200 B</option><option value="400" selected>中 400 B</option><option value="700">大 700 B</option><option value="1000">特大 1000 B</option></select></label>
-    <label>速度 <select id="fps"><option>2</option><option selected>4</option><option>6</option><option>10</option></select> fps</label>
     <label>誤り訂正 <select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
   </div>
-  <div class="row opt">
-    <label><input type="checkbox" id="ack" checked> 受信側の確認音で進める (マイク) / advance on receiver's tones (mic)</label>
-  </div>
+  <fieldset class="opt" id="modebox"><legend>送り方 / how codes advance</legend>
+    <label><input type="radio" name="mode" id="ack" checked> 🎤 確認音で進める (マイク、推奨・既定) / advance on the receiver's tones (mic, default)</label><br>
+    <label><input type="radio" name="mode" id="loop"> 🔁 自動送り (ループ、確認音なし) / auto-advance (loop, no acks)</label>
+    <label id="fpsbox">— 速度 <select id="fps"><option>2</option><option selected>4</option><option>6</option><option>10</option></select> 枚/秒 fps</label>
+  </fieldset>
   <div class="row opt">
     <label><input type="checkbox" id="two" checked> 2枚同時に表示 (約2倍速) / two codes at once (~2× faster)</label>
   </div>
@@ -85,11 +101,12 @@
     <button class="stop" id="stop" disabled>■</button>
   </div>
   <small class="opt">プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
-  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音 (v0.3.0、交互ビット): 受信側 (0.3.0 以降) は読んだチャンクごとに、
+  2枚表示: 左(上)=偶数番、右(下)=奇数番。確認音 (v0.3.0〜、交互ビット): 受信側 (0.3.0 以降) は読んだチャンクごとに、
   左(上)なら 1350 / 1700 Hz、右(下)なら 2050 / 2400 Hz を 1枚ごとに交互に鳴らし (A0/A1/B0/B1)、完了で 3050 Hz を長めに鳴らします。
-  マイク確認モードでは、表示中のチャンクちょうどの確認音を聞いたコードだけが次へ進みます (タイムアウトで飛ばすことはありません。
-  古い確認音は無視)。マイクが許可されない・使えないときだけループモードになります。モードと検出した音は下に表示されます。
-  / Mic-ack mode: a code advances only on the alternating-bit ack for exactly the chunk it shows (no timeouts, stale acks ignored); loop mode only if the mic is refused/unavailable.</small>
+  マイク確認モード (既定) では、表示中のチャンクちょうどの確認音を聞いたコードだけが次へ進みます (タイムアウトで飛ばすことはありません。
+  古い確認音は無視)。マイクが使えなくても自動送りには切り替わりません — 自動送り (ループ) は上の選択か「ループに切替」ボタンでだけ選べます。
+  送信前に「🎤 マイク診断」で受信アプリの「テスト音」が聞こえるか確かめてください。
+  / Mic-ack mode (default): a code advances only on the ack for exactly the chunk it shows (no timeouts, stale acks ignored). It never falls back to auto-advance by itself; loop is only chosen by you.</small>
 </section>
 <section id="show">
   <div id="codes"><canvas id="qrA" width="10" height="10"></canvas><canvas id="qrB" width="10" height="10"></canvas></div>
@@ -106,6 +123,17 @@
     <div id="counts"></div>
     <div id="hint"></div>
   </div>
+  <section id="diag">
+    <div class="row"><b>🎤 マイク診断 / mic diagnostics</b>
+      <button id="mictest">🎤 マイクテスト開始 / start mic test</button>
+      <label>マイク <select id="micsel"><option value="">既定 / default</option></select></label>
+      <label title="1 = 厳しい (誤検出しにくい) … 5 = 敏感 (小さい音でも)">感度 / sensitivity <input type="range" id="sens" min="1" max="5" step="1" value="3"> <span id="sensv">3</span></label>
+    </div>
+    <div id="micinfo">マイク未使用 / mic not open</div>
+    <div id="bars"></div>
+    <div id="testrow">テスト音チェック / test tones: <span class="tchk" id="tchk0">A0</span><span class="tchk" id="tchk1">A1</span><span class="tchk" id="tchk2">B0</span><span class="tchk" id="tchk3">B1</span><span class="tchk" id="tchk4">DONE</span> <small>受信アプリの「🔊 テスト音」で 5 つとも緑になれば OK / all five green = OK</small></div>
+    <div id="evlog"></div>
+  </section>
 </section>
 </main>
 <script id="qrlib">
@@ -2481,47 +2509,118 @@ var QT1 = (function () {
     if (e <= 0) return 0;
     return (s1 * s1 + s2 * s2 - coeff * s1 * s2) / e * 2 * sw2 / (sw * sw);
   }
-  // ---- acknowledgment tones, v0.3.0 alternating bit (same as the app's Tone.java) ----
+  // ---- acknowledgment tones (same as the app's Tone.java) ----
   // chunk i is acked by tone toneOf(i): slot = i & 1 (A top/left even, B bottom/right odd), bit = (i >> 1) & 1.
-  // A0 1350 Hz, A1 1700 Hz, B0 2050 Hz, B1 2400 Hz (80 ms each); DONE 3050 Hz (400 ms).
+  // A0 1350 Hz, A1 1700 Hz, B0 2050 Hz, B1 2400 Hz; DONE 3050 Hz. Frequencies unchanged since 0.3.0.
+  // 0.3.1 receivers play 120 ms acks (0.3.0: 80 ms) with 60 ms gaps; DONE 400 ms. The detector accepts both.
   var A0 = 0, A1 = 1, B0 = 2, B1 = 3, DONE = 4, COUNT = 5;
   var HZ = [1350, 1700, 2050, 2400, 3050], NAMES = ["A0", "A1", "B0", "B1", "DONE"];
-  var ACK_MS = 80, DONE_MS = 400, GAP_MS = 40, ACK_BLOCKS = 3, DONE_BLOCKS = 10;
-  var MIN_RATIO = 0.30, NEIGHBOUR_HZ = 190, NEIGHBOUR_FACTOR = 6, OTHER_FACTOR = 6, MIN_RMS = 120 / 32767, FLOOR_FACTOR = 2.0;
+  var ACK_MS = 120, DONE_MS = 400, GAP_MS = 60, ACK_BLOCKS = 3, DONE_BLOCKS = 10;
+  // ---- detector v0.3.1 (see Tone.java for the reasoning; both implementations must agree block by block) ----
+  // Per 16 ms Hann block, on the signal high-passed at 900 Hz (removes DC, hum, fan rumble, most speech power):
+  //  (1) the tone's level is ≥ SNR × its own tracked noise floor (per frequency, not broadband) and ≥ MIN_DBFS,
+  //  (2) it carries ≥ FRAC of the high-passed block energy,
+  //  (3) it is ≥ 4× (6 dB) the probes 160/190/250/320 Hz either side and ≥ 4× every other protocol tone,
+  //  (4) the 300–900 Hz band has not risen above its own floor by more than the tone's energy (voices do that),
+  //  (5) it is centred on the tone frequency (±40 Hz probes balanced: within about ±14 Hz).
+  // The same tone cannot count twice within REFRACTORY_BLOCKS (192 ms) of its last block (room echo tails).
+  // A burst counts once ACK_BLOCKS (DONE: DONE_BLOCKS) blocks of that tone are seen, allowing single-block holes
+  // (a fade, a dip, a click) but no block of another tone in between.
+  var NEIGHBOUR_HZ = [160, 190, 250, 320], NEIGHBOUR_FACTOR = 4, OTHER_FACTOR = 4, HP_HZ = 900, MIN_DBFS = -85, WARMUP_BLOCKS = 4,
+      CENTRE_PROBE_HZ = 40, CENTRE_ASYM = 0.35, REFRACTORY_BLOCKS = 12,
+      LOW_HZ = 300, LOW_MARGIN = 2, LOW_FACTOR = 1;
+  // sensitivity 1 (strict) .. 5 (very sensitive); 3 = default
+  var SENS_SNR = [0, 20, 12, 8, 5, 3], SENS_FRAC = [0, 0.45, 0.38, 0.3, 0.2, 0.12];
   function toneOf(i) { return (i & 1) * 2 + ((i >> 1) & 1); }
-  /** dominant protocol tone of one block (or -1): loud enough, ≥ MIN_RATIO of the energy, ≥ 6× the bins ±190 Hz and
-   *  ≥ 6× every other tone (see Tone.classify) */
-  function classify(x, n, rate, floor, r) {
-    var e = 0, k, best = -1;
-    for (var i = 0; i < n; i++) e += x[i] * x[i];
-    var rms = Math.sqrt(e / n);
-    for (k = 0; k < COUNT; k++) { r[k] = toneRatio(x, HZ[k], rate, n); if (best < 0 || r[k] > r[best]) best = k; }
-    if (rms < MIN_RMS || rms < FLOOR_FACTOR * floor || r[best] < MIN_RATIO) return -1;
-    for (k = 0; k < COUNT; k++) if (k !== best && r[best] < OTHER_FACTOR * r[k]) return -1;
-    var lo = toneRatio(x, HZ[best] - NEIGHBOUR_HZ, rate, n), hi = toneRatio(x, HZ[best] + NEIGHBOUR_HZ, rate, n);
-    if (r[best] < NEIGHBOUR_FACTOR * Math.max(lo, hi)) return -1;
-    return best;
+  /** Hann-windowed generalized Goertzel: squared amplitude of the sinusoid at hz (a tone of amplitude A gives A²) */
+  function toneAmp2(x, n, hz, rate, win, sw) {
+    var w = 2 * Math.PI * hz / rate, coeff = 2 * Math.cos(w), s1 = 0, s2 = 0;
+    for (var i = 0; i < n; i++) { var s0 = x[i] * win[i] + coeff * s1 - s2; s2 = s1; s1 = s0; }
+    return Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2) * 4 / (sw * sw);
   }
-  /** feeds arbitrary-length sample chunks in 16 ms blocks; returns detected tone ids (A0..DONE), one per tone burst */
-  function Listener(rate) {
-    var block = Math.round(rate * 0.016), buf = new Float32Array(block), n = 0, ratios = new Array(COUNT);
-    var run = 0, runTone = -1, fired = false, floor = 0, self = this;
-    this.block = block; this.lastClass = -1; this.lastRms = 0;
+  /** feeds arbitrary-length sample chunks in 16 ms blocks; returns detected tone ids (A0..DONE), one per tone burst.
+   *  Live diagnostics after each block: lastClass, lastRms, level[k] / floor[k] (dBFS of each tone / its noise floor). */
+  function Listener(rate, opts) {
+    opts = opts || {};
+    var block = Math.round(rate * 0.016), buf = new Float64Array(block), hp = new Float64Array(block), n = 0;
+    var win = new Float64Array(block), sw = 0, sw2 = 0;
+    for (var i = 0; i < block; i++) { win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (block - 1)); sw += win[i]; sw2 += win[i] * win[i]; }
+    // 2nd-order Butterworth high-pass (RBJ), state kept across blocks
+    var w0 = 2 * Math.PI * HP_HZ / rate, cw = Math.cos(w0), al = Math.sin(w0) / (2 * Math.SQRT1_2), a0 = 1 + al;
+    var hb0 = (1 + cw) / 2 / a0, hb1 = -(1 + cw) / a0, hb2 = hb0, ha1 = -2 * cw / a0, ha2 = (1 - al) / a0, x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    // voice band 300–900 Hz: high-pass 300 Hz, then two low-pass 900 Hz sections (a 1350 Hz beep leaks < 3 % of its energy)
+    w0 = 2 * Math.PI * LOW_HZ / rate; cw = Math.cos(w0); al = Math.sin(w0) / (2 * Math.SQRT1_2); a0 = 1 + al;
+    var lb0 = (1 + cw) / 2 / a0, lb1 = -(1 + cw) / a0, lb2 = lb0, la1 = -2 * cw / a0, la2 = (1 - al) / a0, z1 = 0, z2 = 0;
+    w0 = 2 * Math.PI * HP_HZ / rate; cw = Math.cos(w0); al = Math.sin(w0) / (2 * Math.SQRT1_2); a0 = 1 + al;
+    var pb0 = (1 - cw) / 2 / a0, pb1 = (1 - cw) / a0, pb2 = pb0, pa1 = -2 * cw / a0, pa2 = (1 - al) / a0, u1 = 0, u2 = 0, q1 = 0, q2 = 0;
+    var lowFloor = 0;
+    var p = new Float64Array(COUNT), floor = new Float64Array(COUNT), blocks = 0, lowE = 0;
+    var run = 0, runTone = -1, holes = 0, fired = false, firedTone = -1, firedLast = -1e9, self = this;
+    var minAmp2 = 2 * Math.pow(10, MIN_DBFS / 10);   // MIN_DBFS is an rms level; amplitude² = 2 rms²
+    this.block = block; this.lastClass = -1; this.lastRms = 0; this.lastBandRms = 0;
+    this.level = new Float64Array(COUNT); this.floorDb = new Float64Array(COUNT);
+    this.setSensitivity = function (s) { s = Math.max(1, Math.min(5, Math.round(s))); self.sensitivity = s; self.snr = SENS_SNR[s]; self.frac = SENS_FRAC[s]; };
+    this.setSensitivity(opts.sensitivity || 3);
+    function classify() {
+      var e = 0, eh = 0, el = 0, k, best = -1;
+      for (var i = 0; i < block; i++) {
+        var v = buf[i];
+        e += v * v;
+        var y = hb0 * v + hb1 * x1 + hb2 * x2 - ha1 * y1 - ha2 * y2;
+        var z = lb0 * v + lb1 * x1 + lb2 * x2 - la1 * z1 - la2 * z2;
+        var u = pb0 * z + pb1 * z1 + pb2 * z2 - pa1 * u1 - pa2 * u2;
+        var q = pb0 * u + pb1 * u1 + pb2 * u2 - pa1 * q1 - pa2 * q2;
+        x2 = x1; x1 = v; y2 = y1; y1 = y; z2 = z1; z1 = z; u2 = u1; u1 = u; q2 = q1; q1 = q; hp[i] = y;
+        var hw = y * win[i], lw = q * win[i]; eh += hw * hw; el += lw * lw;
+      }
+      self.lastRms = Math.sqrt(e / block);
+      self.lastBandRms = Math.sqrt(eh / sw2);
+      lowE = el;
+      for (k = 0; k < COUNT; k++) { p[k] = toneAmp2(hp, block, HZ[k], rate, win, sw); if (best < 0 || p[k] > p[best]) best = k; }
+      blocks++;
+      if (blocks <= WARMUP_BLOCKS) return -1;
+      var pb = p[best];
+      // energy share: a tone of amplitude A has windowed energy A² sw2 / 2
+      if (eh <= 0 || pb < minAmp2 || pb * sw2 / 2 < self.frac * eh || pb < self.snr * floor[best]) return -1;
+      // a voice brings its first formant and low harmonics (300–900 Hz) up with it; a beep does not, a steady fan is in the floor
+      if (el - LOW_MARGIN * lowFloor > LOW_FACTOR * pb * sw2 / 2) return -1;
+      for (k = 0; k < COUNT; k++) if (k !== best && pb < OTHER_FACTOR * p[k]) return -1;
+      for (k = 0; k < NEIGHBOUR_HZ.length; k++) {
+        if (pb < NEIGHBOUR_FACTOR * toneAmp2(hp, block, HZ[best] - NEIGHBOUR_HZ[k], rate, win, sw)) return -1;
+        if (pb < NEIGHBOUR_FACTOR * toneAmp2(hp, block, HZ[best] + NEIGHBOUR_HZ[k], rate, win, sw)) return -1;
+      }
+      // centred: the acks are exact (crystal clocks at both ends); a voice harmonic or whistle a little off-frequency
+      // is lopsided. |asym| ≤ CENTRE_ASYM ⇔ within about ±14 Hz of the tone.
+      var pp = toneAmp2(hp, block, HZ[best] + CENTRE_PROBE_HZ, rate, win, sw), pm = toneAmp2(hp, block, HZ[best] - CENTRE_PROBE_HZ, rate, win, sw);
+      if (Math.abs(pp - pm) > CENTRE_ASYM * (pp + pm)) return -1;
+      return best;
+    }
+    function feedBlock() {
+      var c = classify(), k;
+      if (blocks === 1) lowFloor = lowE; else if (c < 0) lowFloor = lowE < lowFloor ? 0.7 * lowFloor + 0.3 * lowE : 0.985 * lowFloor + 0.015 * lowE;
+      // per-tone noise floors: fast down, slow up (~1.5 s); never learn from the tone being detected
+      for (k = 0; k < COUNT; k++) {
+        if (k === c || (k === runTone && run > 0)) continue;
+        if (blocks === 1) floor[k] = p[k];
+        else floor[k] = p[k] < floor[k] ? 0.7 * floor[k] + 0.3 * p[k] : 0.985 * floor[k] + 0.015 * p[k];
+      }
+      for (k = 0; k < COUNT; k++) {
+        self.level[k] = 10 * Math.log10(Math.max(p[k] / 2, 1e-13));
+        self.floorDb[k] = 10 * Math.log10(Math.max(floor[k] / 2, 1e-13));
+      }
+      self.lastClass = c;
+      if (c >= 0 && c === runTone) { run++; holes = 0; }
+      else if (c < 0 && runTone >= 0 && holes < 1) holes++;     // tolerate one quiet block inside a burst
+      else { run = c >= 0 ? 1 : 0; runTone = c; holes = 0; fired = c >= 0 && c === firedTone && blocks - firedLast <= REFRACTORY_BLOCKS; }
+      if (c >= 0 && fired && c === firedTone) firedLast = blocks;
+      if (c >= 0 && run >= (c === DONE ? DONE_BLOCKS : ACK_BLOCKS) && !fired) { fired = true; firedTone = c; firedLast = blocks; return c; }
+      return -1;
+    }
     this.feed = function (x) {
       var ev = [];
       for (var i = 0; i < x.length; i++) {
         buf[n++] = x[i];
-        if (n === block) {
-          n = 0;
-          var e = 0;
-          for (var j = 0; j < block; j++) e += buf[j] * buf[j];
-          var rms = Math.sqrt(e / block), c = classify(buf, block, rate, floor, ratios);
-          self.lastClass = c; self.lastRms = rms;
-          if (c < 0) floor = rms < floor ? 0.7 * floor + 0.3 * rms : 0.98 * floor + 0.02 * rms;
-          if (c >= 0 && c === runTone) run++;
-          else { run = c >= 0 ? 1 : 0; runTone = c; fired = false; }
-          if (c >= 0 && run >= (c === DONE ? DONE_BLOCKS : ACK_BLOCKS) && !fired) { fired = true; ev.push(c); }
-        }
+        if (n === block) { n = 0; var c = feedBlock(); if (c >= 0) ev.push(c); }
       }
       return ev;
     };
@@ -2610,7 +2709,7 @@ var QT1 = (function () {
 
   return { crc32: crc32, hex8: hex8, base45: base45, envelope: envelope, frames: frames, newId: newId, toneRatio: toneRatio,
            A0: A0, A1: A1, B0: B0, B1: B1, DONE: DONE, HZ: HZ, NAMES: NAMES, ACK_MS: ACK_MS, DONE_MS: DONE_MS, GAP_MS: GAP_MS,
-           toneOf: toneOf, classify: classify, Listener: Listener, Scheduler: Scheduler };
+           toneOf: toneOf, Listener: Listener, Scheduler: Scheduler, SENS_SNR: SENS_SNR, SENS_FRAC: SENS_FRAC };
 })();
 if (typeof module !== "undefined") module.exports = QT1;
 </script>
@@ -2620,19 +2719,22 @@ if (typeof module !== "undefined") module.exports = QT1;
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   var file = null, frames = [], running = false, paused = false, timer = null, sched = null, mic = null, ackMode = false;
-  var canvases = [$("qrA"), $("qrB")], drawn = [-2, -2], loopReason = "", lastHeard = -1, lastHeardOk = false, lastHeardAt = -1e9;
-  var lampAt = [-1e9, -1e9, -1e9, -1e9, -1e9], lampOk = [false, false, false, false, false], uiTimer = null;
+  var canvases = [$("qrA"), $("qrB")], drawn = [-2, -2], loopReason = "", micProblem = "", lastHeard = -1, lastHeardOk = false, lastHeardAt = -1e9;
+  var lampAt = [-1e9, -1e9, -1e9, -1e9, -1e9], lampOk = [false, false, false, false, false], uiTimer = null, testMode = false;
+  var events = [], testAt = [-1e9, -1e9, -1e9, -1e9, -1e9], micStarting = null;
   // read-only hook for automated tests (tools/test-web-chrome.py): display log + state snapshot
   var testLog = [];
   window.__qtSender = {
     log: testLog,
     state: function () {
-      return { running: running, ackMode: ackMode, mode: ackMode ? "ack" : (sched ? "loop" : ""), loopReason: loopReason,
+      return { running: running, ackMode: ackMode, mode: ackMode ? "ack" : (sched ? "loop" : ""), loopReason: loopReason, micProblem: micProblem,
                total: frames.length, slots: sched ? sched.slots : 0,
                shown: sched ? [sched.shown(0), sched.shown(1)] : [-1, -1],
                expected: sched ? [sched.expectedTone(0), sched.expectedTone(1)] : [-1, -1],
                acked: sched ? sched.ackedCount() : 0, good: sched ? sched.goodAcks() : 0, stale: sched ? sched.staleAcks() : 0,
-               finished: sched ? sched.finished() : false, frames: frames.slice() };
+               finished: sched ? sched.finished() : false, frames: frames.slice(),
+               mic: mic ? { settings: mic.settings, rate: mic.rate, sensitivity: mic.listener.sensitivity } : null,
+               events: events.slice(), testMode: testMode };
     }
   };
 
@@ -2646,6 +2748,8 @@ if (typeof module !== "undefined") module.exports = QT1;
   drop.addEventListener("dragover", function (e) { e.preventDefault(); drop.classList.add("over"); });
   drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
   drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+  function syncMode() { $("fpsbox").className = $("ack").checked ? "off" : ""; $("fps").disabled = $("ack").checked; }
+  $("ack").addEventListener("change", syncMode); $("loop").addEventListener("change", syncMode); syncMode();
 
   var version = 0;
   function drawCode(cv, text) {
@@ -2681,12 +2785,15 @@ if (typeof module !== "undefined") module.exports = QT1;
     $("info").textContent = line;
     renderState();
   }
-  /** mode badge, per-slot state, tone lamps, mic level, silence hint */
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  /** mode badge, per-slot state, tone lamps, mic level, silence hint, diagnostics */
   function renderState() {
     var now = performance.now(), badge = $("mode");
-    if (!sched) { badge.textContent = ""; badge.className = ""; return; }
-    if (ackMode) { badge.textContent = "🎤 マイク確認モード / MIC-ACK mode — 確認音を聞いたコードだけ進む / advances only on its ack"; badge.className = "ack"; }
-    else { badge.textContent = "🔁 ループモード / LOOP mode — " + Math.round(sched.periodMs) + " ms/code, 確認音なし / no acks" + (loopReason ? " (" + loopReason + ")" : ""); badge.className = "loop"; }
+    renderDiag(now);
+    if (!sched) { badge.textContent = ""; badge.className = ""; $("slots").innerHTML = ""; $("counts").textContent = ""; $("hint").textContent = ""; return; }
+    if (ackMode && micProblem) { badge.textContent = "⚠ マイク確認モード — マイクが使えないため進みません / MIC-ACK mode, but no microphone: codes will not advance (" + micProblem + ")"; badge.className = "warn"; }
+    else if (ackMode) { badge.textContent = "🎤 マイク確認モード / MIC-ACK mode — 確認音を聞いたコードだけ進む / advances only on its ack"; badge.className = "ack"; }
+    else { badge.textContent = "🔁 自動送り (ループ) / LOOP mode — " + Math.round(sched.periodMs) + " ms/code, 確認音なし / no acks" + (loopReason ? " (" + loopReason + ")" : ""); badge.className = "loop"; }
     var html = "";
     for (var s = 0; s < sched.slots; s++) {
       var i = sched.shown(s), label = sched.slots === 2 ? (s === 0 ? "A (左/上)" : "B (右/下)") : "code";
@@ -2711,8 +2818,48 @@ if (typeof module !== "undefined") module.exports = QT1;
     $("meterbar").style.width = mic ? Math.max(0, Math.min(100, (db + 80) * 1.25)) + "%" : "0";
     $("counts").textContent = ackMode ? "✓" + sched.goodAcks() + " 一致 / matched   ✗" + sched.staleAcks() + " 古い・無関係 / stale ignored" +
       (lastHeard >= 0 && now - lastHeardAt < 3000 ? "   last: " + QT1.NAMES[lastHeard] + (lastHeardOk ? " ✓" : " (stale)") : "") : "";
-    $("hint").textContent = ackMode && sched.silent(now) ? "⚠ しばらく確認音が届きません — 表示を続けています (飛ばしません)。受信側の音量・向きを確認 / no matching ack for a while — still showing, nothing skipped; check the receiver's volume and aim" : "";
+    var hint = "";
+    if (ackMode && micProblem) hint = "⚠ マイクを許可するか、「🔁 ループに切替」で自動送りにしてください / allow the microphone, or press “switch to loop” for auto-advance";
+    else if (ackMode && sched.silent(now)) hint = "⚠ しばらく確認音が届きません — 表示を続けています (飛ばしません)。下の診断で 5 つの音のレベルを確認 (受信側の音量・向き・感度) / no matching ack for a while — still showing, nothing skipped; check the bars below (receiver volume, aim, sensitivity)";
+    $("hint").textContent = hint;
     $("toloop").style.display = ackMode && running ? "" : "none";
+  }
+  var DB_MIN = -90, DB_MAX = -20;
+  function pct(db) { return Math.max(0, Math.min(100, (db - DB_MIN) / (DB_MAX - DB_MIN) * 100)); }
+  /** per-tone level bars (dBFS) with the tracked noise floor (orange) and the threshold (red), test-tone checklist */
+  function renderDiag(now) {
+    var bars = $("bars");
+    if (!bars.firstChild) {
+      var h = "";
+      for (var k = 0; k < 5; k++) h += '<div class="bar"><span>' + QT1.NAMES[k] + " " + QT1.HZ[k] + ' Hz</span><span class="track"><span class="fill" id="bf' + k +
+        '"></span><span class="fl" id="bl' + k + '"></span><span class="th" id="bt' + k + '"></span></span><span id="bv' + k + '">—</span></div>';
+      h += '<div class="bar"><span>帯域 >900 Hz</span><span class="track"><span class="fill" id="bfb"></span></span><span id="bvb">—</span></div>';
+      bars.innerHTML = h;
+    }
+    var L = mic ? mic.listener : null;
+    for (var j = 0; j < 5; j++) {
+      var lv = L ? L.level[j] : DB_MIN, fl = L ? L.floorDb[j] : DB_MIN, th = fl + 10 * Math.log10(L ? L.snr : 8);
+      $("bf" + j).style.width = pct(lv) + "%";
+      $("bf" + j).className = "fill" + (L && L.lastClass === j ? " on" : "");
+      $("bl" + j).style.left = pct(fl) + "%";
+      $("bt" + j).style.left = pct(th) + "%";
+      $("bv" + j).textContent = L ? Math.round(lv) + " dB  (床 " + Math.round(fl) + ")" : "—";
+      $("tchk" + j).className = "tchk" + (now - testAt[j] < 15000 ? " ok" : "");
+    }
+    var bl = L ? 20 * Math.log10(Math.max(L.lastBandRms, 1e-6)) : DB_MIN;
+    $("bfb").style.width = pct(bl) + "%";
+    $("bvb").textContent = L ? Math.round(bl) + " dBFS  (全体 " + Math.round(20 * Math.log10(Math.max(L.lastRms, 1e-6))) + ")" : "—";
+    var lines = events.slice(-8).reverse().map(function (e) {
+      return e.time + "  " + (QT1.NAMES[e.tone] + "    ").slice(0, 5) + " " + QT1.HZ[e.tone] + " Hz  " + e.what;
+    });
+    $("evlog").textContent = lines.length ? "検出ログ / detected tones (新しい順):\n" + lines.join("\n") : "検出ログ / detected tones: まだありません / none yet";
+    $("mictest").textContent = testMode ? "■ マイクテスト停止 / stop mic test" : "🎤 マイクテスト開始 / start mic test";
+  }
+  function logEvent(tone, what) {
+    var d = new Date(), p2 = function (v) { return ("0" + v).slice(-2); };
+    events.push({ tone: tone, what: what, time: p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) + "." + ("00" + d.getMilliseconds()).slice(-3) });
+    if (events.length > 200) events.shift();
+    testAt[tone] = performance.now();
   }
   function schedule() {
     clearTimeout(timer);
@@ -2727,10 +2874,12 @@ if (typeof module !== "undefined") module.exports = QT1;
   function onTone(tone) {
     var now = performance.now();
     lampAt[tone] = now;
-    if (tone === QT1.DONE) { lampOk[tone] = true; onDone(); return; }
-    if (!running || paused || !sched) return;
+    if (!running || !sched || !ackMode) { logEvent(tone, running ? "(自動送り中: 無視 / loop mode)" : "(テスト / test)"); renderState(); return; }
+    if (tone === QT1.DONE) { lampOk[tone] = true; logEvent(tone, "完了音 → 停止 / done"); onDone(); return; }
+    if (paused) { logEvent(tone, "(一時停止中 / paused)"); return; }
     var ok = sched.onAck(tone, now);
     lampOk[tone] = ok; lastHeard = tone; lastHeardOk = ok; lastHeardAt = now;
+    logEvent(tone, ok ? "✓ 一致 → 次へ / matched" : "古い・無関係 (無視) / stale, ignored");
     testLog.push({ t: Math.round(now), heard: QT1.NAMES[tone], ok: ok });
     if (ok) render(); else renderState();
     schedule();
@@ -2742,13 +2891,27 @@ if (typeof module !== "undefined") module.exports = QT1;
     stop(); setStatus("受信完了 (完了音を検出) / receiver finished ✓");
   }
 
-  /** microphone → 16 ms blocks → 5-tone Goertzel detector (A0/A1/B0/B1/DONE) */
+  /** microphone → 16 ms blocks → 5-tone Goertzel detector (A0/A1/B0/B1/DONE). All browser voice processing OFF:
+   *  echo cancellation / noise suppression / auto gain treat a steady beep as noise and can erase it. */
+  var OFF = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
   async function startMic() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { var err = new Error("getUserMedia unavailable"); err.name = "NotSupported"; throw err; }
-    var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    var dev = $("micsel").value;
+    var c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 1 },
+              voiceIsolation: false,                                                    // newer Chrome / Safari
+              googEchoCancellation: false, googAutoGainControl: false, googNoiseSuppression: false,
+              googHighpassFilter: false, googTypingNoiseDetection: false };             // legacy Chrome names (ignored elsewhere)
+    if (dev) c.deviceId = { exact: dev };
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: c });
+    var track = stream.getAudioTracks()[0], settings = track && track.getSettings ? track.getSettings() : {};
+    // some browsers ignore the initial constraints: insist once more and re-read what is actually applied
+    if (track && (settings.echoCancellation || settings.noiseSuppression || settings.autoGainControl) && track.applyConstraints) {
+      try { await track.applyConstraints(OFF); } catch (e) { /* not supported: shown below */ }
+      settings = track.getSettings();
+    }
     var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === "suspended") { try { await ctx.resume(); } catch (e) { /* resumed by the click */ } }
-    var src = ctx.createMediaStreamSource(stream), listener = new QT1.Listener(ctx.sampleRate), node, iv = null;
+    if (ctx.state === "suspended") { try { await ctx.resume(); } catch (e) { /* resumed by the next click */ } }
+    var src = ctx.createMediaStreamSource(stream), listener = new QT1.Listener(ctx.sampleRate, { sensitivity: Number($("sens").value) }), node, iv = null;
     var handle = function (ev) { ev.forEach(onTone); };
     if (ctx.createScriptProcessor) {
       // contiguous samples (no gaps), unlike polling an AnalyserNode
@@ -2763,19 +2926,54 @@ if (typeof module !== "undefined") module.exports = QT1;
       iv = setInterval(function () { node.getFloatTimeDomainData(buf); handle(listener.feed(buf)); }, 16);
     }
     stream.getTracks().forEach(function (t) { t.addEventListener("ended", function () { micLost("マイクが停止 / mic ended"); }); });
-    return { listener: listener, stop: function () { if (iv) clearInterval(iv); try { node.disconnect(); } catch (e) { /* already */ }
-      stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close(); } };
+    fillDevices();
+    var m = { listener: listener, settings: settings, rate: ctx.sampleRate, ctx: ctx, label: track ? track.label : "",
+              stop: function () { if (iv) clearInterval(iv); try { node.disconnect(); } catch (e) { /* already */ }
+                stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close(); } };
+    showMicInfo(m);
+    return m;
   }
-  /** mic gone (unplugged, revoked) or the user chose loop: switch to the timed loop, clearly flagged */
+  function showMicInfo(m) {
+    var el = $("micinfo");
+    if (!m) { el.textContent = micProblem ? "⚠ マイク使用不可 / mic unavailable: " + micProblem : "マイク未使用 / mic not open"; el.className = micProblem ? "bad" : ""; return; }
+    var st = m.settings || {}, bad = [];
+    function f(k) { var v = st[k]; if (v === true) bad.push(k); return k + "=" + (v === undefined ? "?" : v); }
+    var txt = "使用中: " + (m.label || "マイク") + "  |  " + f("echoCancellation") + " " + f("noiseSuppression") + " " + f("autoGainControl") +
+      "  |  " + m.rate + " Hz" + (st.sampleRate && st.sampleRate !== m.rate ? " (mic " + st.sampleRate + ")" : "") + "  |  " + (m.ctx.state || "");
+    if (bad.length) txt += "\n⚠ ブラウザが音声処理をオフにしませんでした (" + bad.join(", ") + ") — 確認音が消されることがあります。別のブラウザ (Chrome/Edge/Firefox) か、OS のマイク設定で「音声強調・ノイズ抑制」をオフに / the browser kept voice processing on";
+    if (m.ctx.state === "suspended") txt += "\n⚠ AudioContext が停止中 — ページをクリックしてください / click the page to start audio";
+    el.textContent = txt; el.className = bad.length || m.ctx.state === "suspended" ? "bad" : "";
+  }
+  async function fillDevices() {
+    try {
+      var sel = $("micsel"), cur = sel.value, list = await navigator.mediaDevices.enumerateDevices(), h = '<option value="">既定 / default</option>';
+      list.filter(function (d) { return d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"; }).forEach(function (d, i) {
+        h += '<option value="' + esc(d.deviceId) + '">' + esc(d.label || "マイク " + (i + 1)) + "</option>"; });
+      sel.innerHTML = h; sel.value = cur;
+    } catch (e) { /* enumerateDevices unavailable */ }
+  }
+  /** open the mic once (shared by the mic test and the transfer) */
+  async function ensureMic() {
+    if (mic) return mic;
+    if (!micStarting) micStarting = startMic().then(function (m) { mic = m; micStarting = null; micProblem = ""; return m; },
+      function (e) { micStarting = null; throw e; });
+    return micStarting;
+  }
+  function closeMic() { if (mic) { mic.stop(); mic = null; } showMicInfo(null); }
+  /** mic gone (unplugged, revoked): keep MIC-ACK mode (no silent auto-advance), say so, offer loop */
+  function micLost(reason) {
+    if (mic) { try { mic.stop(); } catch (e) { /* gone */ } mic = null; }
+    micProblem = reason; showMicInfo(null); renderState();
+  }
+  /** the user chose loop (button): switch to the timed loop, clearly flagged */
   function toLoop(reason) {
     if (!running || !ackMode) return;
-    if (mic) { mic.stop(); mic = null; }
-    ackMode = false; loopReason = reason;
+    if (mic && !testMode) closeMic();
+    ackMode = false; loopReason = reason; micProblem = "";
     sched = QT1.Scheduler(frames.length, sched.slots, sched.periodMs, false);
     drawn = [-2, -2]; sched.start(performance.now());
     render(); schedule();
   }
-  function micLost(reason) { toLoop(reason); }
 
   async function start() {
     var name, isFile, data;
@@ -2783,11 +2981,12 @@ if (typeof module !== "undefined") module.exports = QT1;
     else { isFile = false; name = ""; data = new TextEncoder().encode($("text").value); }
     if (!data.length) { setStatus("送るデータがありません / nothing to send"); return; }
     frames = await QT1.frames(QT1.newId(), isFile, name, data, Number($("chunk").value), true);
-    ackMode = $("ack").checked; running = true; paused = false; loopReason = ackMode ? "" : "マイク設定オフ / mic option off";
+    ackMode = $("ack").checked; running = true; paused = false; micProblem = "";
+    loopReason = ackMode ? "" : "自動送りを選択 / chosen by you";
     lastHeard = -1; testLog.length = 0;
     if (ackMode) {
-      try { mic = await startMic(); }
-      catch (e) { ackMode = false; mic = null; loopReason = "マイク使用不可 / mic unavailable: " + (e.name || e.message); }
+      try { await ensureMic(); }
+      catch (e) { mic = null; micProblem = "マイク使用不可 / mic unavailable: " + (e.name || e.message); showMicInfo(null); }
     }
     sched = QT1.Scheduler(frames.length, $("two").checked ? 2 : 1, 1000 / Number($("fps").value), ackMode);
     drawn = [-2, -2];
@@ -2797,15 +2996,16 @@ if (typeof module !== "undefined") module.exports = QT1;
     document.body.classList.add("running");
     setStatus("送信中 / sending: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]);
     render(); schedule();
-    clearInterval(uiTimer); uiTimer = setInterval(renderState, 100);
+    startUi();
   }
+  function startUi() { clearInterval(uiTimer); uiTimer = setInterval(renderState, 100); }
   function stop() {
     running = false; clearTimeout(timer);
-    if (mic) { mic.stop(); mic = null; }
+    if (!testMode) closeMic();
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = true; });
     $("start").disabled = false;
     document.body.classList.remove("running");
-    renderState(); clearInterval(uiTimer);
+    renderState(); if (!testMode) clearInterval(uiTimer);
     if (!/✓/.test($("status").textContent)) setStatus("停止 / stopped");
   }
   function step(d) {
@@ -2814,6 +3014,20 @@ if (typeof module !== "undefined") module.exports = QT1;
     for (var s = 0; s < sched.slots; s++) sched.step(s, d, performance.now());
     render();
   }
+  $("mictest").onclick = async function () {
+    if (testMode) { testMode = false; if (!running || !ackMode) closeMic(); renderState(); if (!running) clearInterval(uiTimer); return; }
+    testMode = true; startUi();
+    try { micProblem = ""; await ensureMic(); }
+    catch (e) { testMode = false; micProblem = (e.name || "") + " " + (e.message || ""); showMicInfo(null); }
+    renderState();
+  };
+  $("sens").oninput = function () { $("sensv").textContent = this.value; if (mic) mic.listener.setSensitivity(Number(this.value)); };
+  $("micsel").onchange = async function () {   // reopen with the chosen device
+    if (!mic) return;
+    closeMic();
+    try { await ensureMic(); } catch (e) { micLost("マイク使用不可 / mic unavailable: " + (e.name || e.message)); }
+  };
+  document.addEventListener("click", function () { if (mic && mic.ctx.state === "suspended") mic.ctx.resume().then(function () { showMicInfo(mic); }); });
   $("start").onclick = function () { setStatus("準備中 / preparing…"); start().catch(function (e) { setStatus("エラー: " + e); }); };
   $("stop").onclick = stop;
   $("toloop").onclick = function () { toLoop("手動で切替 / switched by user"); };
@@ -2826,6 +3040,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     if (e.key === "ArrowLeft") $("prev").onclick();
     if (e.key === "ArrowRight") $("next").onclick();
   });
+  renderState();
 })();
 </script>
 </body></html>

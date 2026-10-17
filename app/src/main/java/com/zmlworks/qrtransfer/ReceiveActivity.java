@@ -18,6 +18,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -29,6 +30,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -44,12 +46,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.zip.DataFormatException;
 
-/** Receiver: Camera2 preview + ZXing decode of each frame, progress grid, CRC check, save/share. */
-public final class ReceiveActivity extends Activity implements TextureView.SurfaceTextureListener {
+/**
+ * Receiver: Camera2 preview + ZXing decode of each frame, progress grid, CRC check, save/share.
+ * Plays the ack tones ({@link AckPlayer}) and shows each tone it played, the media volume and where the sound goes;
+ * "test tones" plays A0, A1, B0, B1, DONE so the sender's microphone can be checked before a transfer.
+ */
+public final class ReceiveActivity extends Activity implements TextureView.SurfaceTextureListener, AckPlayer.Callback {
     private static final int REQ_CAM = 1, REQ_SAVE = 2;
 
     private AutoFitTextureView preview;
-    private TextView progress, missing, resultInfo, resultText;
+    private TextView progress, missing, resultInfo, resultText, ackStatus;
     private ChunkGridView grid;
     private CheckBox beep;
     private View resultPanel, scanPanel;
@@ -72,7 +78,10 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     private volatile boolean beepOn = true;
     private boolean asking;
 
-    private AckPlayer player;
+    private volatile AckPlayer player;
+    private int played;
+    private String lastPlayed = "";
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
     private Protocol.Content content;   // UI thread
 
     @Override protected void onCreate(Bundle b) {
@@ -85,23 +94,28 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
         missing = findViewById(R.id.missing);
         grid = findViewById(R.id.grid);
         beep = findViewById(R.id.beep);
+        ackStatus = findViewById(R.id.ack_status);
+        Button test = findViewById(R.id.test_tones);
+        test.setOnClickListener(v -> { AckPlayer pl = player; if (pl != null) pl.testSequence(); });
         resultPanel = findViewById(R.id.result_panel);
         scanPanel = findViewById(R.id.scan_panel);
         resultInfo = findViewById(R.id.result_info);
         resultText = findViewById(R.id.result_text);
-        beep.setOnCheckedChangeListener((v, on) -> beepOn = on);
+        beep.setOnCheckedChangeListener((v, on) -> { beepOn = on; renderAckStatus(); });
         findViewById(R.id.copy).setOnClickListener(v -> copy());
         findViewById(R.id.save).setOnClickListener(v -> saveAs());
         findViewById(R.id.share).setOnClickListener(v -> share());
         findViewById(R.id.again).setOnClickListener(v -> again());
         preview.setSurfaceTextureListener(this);
-        player = new AckPlayer();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         renderProgress(0, 0, "", new boolean[0], -1, "");
     }
 
     @Override protected void onResume() {
         super.onResume();
+        player = new AckPlayer(this);
+        renderAckStatus();
+        ui.post(statusLoop);
         camThread = new HandlerThread("camera");
         camThread.start();
         cam = new Handler(camThread.getLooper());
@@ -111,12 +125,15 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     }
 
     @Override protected void onPause() {
+        ui.removeCallbacks(statusLoop);
         closeCamera();
         camThread.quitSafely();
+        AckPlayer pl = player;
+        player = null;
+        if (pl != null) pl.release();
         super.onPause();
     }
 
-    @Override protected void onDestroy() { player.release(); super.onDestroy(); }
 
     @Override public void onRequestPermissionsResult(int req, String[] p, int[] r) {
         if (req != REQ_CAM) return;
@@ -238,7 +255,8 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
     private void onText(String text, long now) {
         if (completed) {
             Protocol.Frame f = Protocol.parse(text);
-            if (f != null && f.id.equals(completedId) && beepOn && policy.shouldRepeatDone(now)) player.done();
+            AckPlayer pl = player;
+            if (f != null && f.id.equals(completedId) && beepOn && pl != null && policy.shouldRepeatDone(now)) pl.done();
             return;
         }
         Protocol.Assembler.Result res = asm.accept(text);
@@ -249,7 +267,8 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
             // alternating-bit ack (tone = slot + bit of this chunk), also for duplicates: the sender may have
             // missed the first ack and is still showing it
             int tone = policy.onFrame(asm.lastSeen(), now);
-            if (tone >= 0) player.ack(tone);
+            AckPlayer pl = player;
+            if (tone >= 0 && pl != null) pl.ack(tone);
         }
         if (res == Protocol.Assembler.Result.DUPLICATE) return;
         int total = asm.total(), got = asm.received(), last = asm.lastIndex();
@@ -268,7 +287,8 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
                 completedId = asm.id();
                 completedAt = now;
                 completed = true;
-                if (beepOn) { player.done(); policy.shouldRepeatDone(now); }
+                AckPlayer pl = player;
+                if (beepOn && pl != null) { pl.done(); policy.shouldRepeatDone(now); }
                 runOnUiThread(() -> showResult(c, crc));
             } catch (DataFormatException e) {
                 asm.reset();
@@ -276,6 +296,44 @@ public final class ReceiveActivity extends Activity implements TextureView.Surfa
                 runOnUiThread(() -> Toast.makeText(this, getString(R.string.verify_failed, e.getMessage()), Toast.LENGTH_LONG).show());
             }
         }
+    }
+
+    // ---------------- ack tone indicator ----------------
+    /** player thread: a tone is being written to the speaker */
+    @Override public void onPlayed(int tone) {
+        String t = new java.text.SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT).format(new java.util.Date());
+        ui.post(() -> { played++; lastPlayed = "♪ " + Tone.NAMES[tone] + " " + (int) Tone.HZ[tone] + " Hz  " + t; renderAckStatus(); });
+    }
+
+    private final Runnable statusLoop = new Runnable() {
+        @Override public void run() { renderAckStatus(); ui.postDelayed(this, 1000); }
+    };
+
+    /** last tone played, count, media volume, and a warning when the sound will not reach the sender */
+    private void renderAckStatus() {
+        if (ackStatus == null) return;
+        AudioManager am = getSystemService(AudioManager.class);
+        int vol = am.getStreamVolume(AudioManager.STREAM_MUSIC), max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        StringBuilder b = new StringBuilder();
+        b.append(played == 0 ? getString(R.string.ack_none_yet) : getString(R.string.ack_played, lastPlayed, played));
+        b.append('\n').append(getString(R.string.media_volume, vol, max));
+        if (!beepOn) b.append('\n').append(getString(R.string.warn_beep_off));
+        else if (player != null && !player.ok()) b.append('\n').append(getString(R.string.warn_no_output));
+        if (vol == 0) b.append('\n').append(getString(R.string.warn_volume_zero));
+        else if (vol * 2 < max) b.append('\n').append(getString(R.string.warn_volume_low));
+        if (headphones(am)) b.append('\n').append(getString(R.string.warn_headphones));
+        ackStatus.setText(b);
+    }
+
+    /** media is probably routed to headphones / Bluetooth instead of the loudspeaker */
+    private static boolean headphones(AudioManager am) {
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+            int t = d.getType();
+            if (t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || t == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                    || t == AudioDeviceInfo.TYPE_WIRED_HEADSET || t == AudioDeviceInfo.TYPE_USB_HEADSET
+                    || t == AudioDeviceInfo.TYPE_BLE_HEADSET) return true;
+        }
+        return false;
     }
 
     // ---------------- UI ----------------

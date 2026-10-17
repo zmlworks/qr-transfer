@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-/** 5-tone detector (A0/A1/B0/B1/DONE): separation, minimum duration, noise, harmonics, speech, old tones. */
+/** 5-tone detector (A0/A1/B0/B1/DONE): separation, minimum duration, noise, harmonics, speech, old tones, 0.3.1 cases. */
 public class ToneTest {
     static final int R = Tone.RATE;
 
@@ -187,6 +187,57 @@ public class ToneTest {
         short[] bg = noise(R * 2, 0.01, 9);
         short[] sig = concat(bg, mix(concat(ack(Tone.B1, 0.045), gap(50)), noise(R * 130 / 1000, 0.01, 10)));
         assertEquals(List.of(Tone.B1), events(sig));
+    }
+
+    @Test public void acksOf030ReceiversStillDetected() {
+        // 0.3.0 receivers: 80 ms acks, 40 ms apart
+        short[] sig = concat(gap(100), Tone.synth(Tone.HZ[Tone.A0], 80, R, 0.05), gap(40), Tone.synth(Tone.HZ[Tone.B0], 80, R, 0.05),
+                gap(200), Tone.synth(Tone.HZ[Tone.A1], 80, R, 0.05), gap(40), Tone.synth(Tone.HZ[Tone.B1], 80, R, 0.05), gap(100));
+        assertEquals(List.of(Tone.A0, Tone.B0, Tone.A1, Tone.B1), events(mix(sig, noise(sig.length, 0.004, 3))));
+    }
+
+    /** The field failure of 0.3.0: tone at −60 dBFS (AGC off, phone at arm's length) under louder rumble + DC. */
+    @Test public void quietToneUnderLowFrequencyRumble() {
+        short[] t = concat(gap(300), ack(Tone.A1, 0.0014), gap(300), ack(Tone.B0, 0.0014), gap(300));
+        short[] x = new short[t.length];
+        for (int i = 0; i < x.length; i++)
+            x[i] = (short) Math.round(t[i] + 32767 * (0.002 + 0.006 * Math.sin(2 * Math.PI * 120 * i / R) + 0.004 * Math.sin(2 * Math.PI * 47 * i / R)));
+        assertEquals(List.of(Tone.A1, Tone.B0), events(x));
+    }
+
+    @Test public void offFrequencyToneIsRejected() {
+        for (double off : new double[]{-60, -35, 35, 60})
+            assertEquals("off " + off, List.of(), events(concat(gap(100), Tone.synth(Tone.HZ[Tone.A1] + off, 300, R, 0.1), gap(100))));
+        assertEquals(List.of(Tone.A1), events(concat(gap(100), Tone.synth(Tone.HZ[Tone.A1] + 6, 120, R, 0.1), gap(100))));
+    }
+
+    @Test public void echoTailDoesNotCountTwice() {
+        // tone followed by a decaying echo (RT60 ≈ 0.5 s) with flutter: one event
+        short[] a = ack(Tone.B1, 0.1);
+        short[] sig = new short[R];
+        for (int i = 0; i < a.length; i++) sig[1600 + i] = a[i];
+        for (int i = 1600 + a.length; i < sig.length; i++) {
+            double t = (i - 1600 - a.length) / (double) R;
+            sig[i] = (short) (0.03 * 32767 * Math.exp(-13.8 * t) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 9 * t)) * Math.sin(2 * Math.PI * Tone.HZ[Tone.B1] * i / R));
+        }
+        assertEquals(List.of(Tone.B1), events(mix(sig, noise(sig.length, 0.0005, 4))));
+    }
+
+    @Test public void sensitivityAndLevels() {
+        Tone.Listener l = new Tone.Listener(R, 9);
+        assertEquals(5, l.sensitivity());
+        l.setSensitivity(0);
+        assertEquals(1, l.sensitivity());
+        // a −40 dBFS tone at 16 kHz and 44.1 kHz: reported level ≈ its rms
+        for (int rate : new int[]{R, 44_100, 48_000}) {
+            Tone.Listener m = new Tone.Listener(rate);
+            short[] s = concat(new short[rate / 5], Tone.synth(Tone.HZ[Tone.B0], 300, rate, 0.01 * Math.sqrt(2)));
+            int got = -1;
+            for (int off = 0; off + m.blockSize() <= s.length; off += m.blockSize()) { int e = m.feed(s, off, m.blockSize()); if (e >= 0) got = e; }
+            assertEquals("rate " + rate, Tone.B0, got);
+            assertEquals("rate " + rate, -40, m.level(Tone.B0), 1.5);
+            assertTrue(m.floorDb(Tone.B0) < -80);
+        }
     }
 
     @Test public void javaAgreesWithTheWebDetector() throws Exception {

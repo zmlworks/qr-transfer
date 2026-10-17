@@ -40,5 +40,5 @@ page single false false;   shot single 1400,900 1
 # microphone paths (fake mic must never advance without acks, mic refused → LOOP mode, full acoustic loop with a
 # simulated receiver): Playwright, see tools/test-web-chrome.py
 PY=${PLAYWRIGHT_PYTHON:-python3}
-"$PY" tools/test-web-chrome.py "${SHOT:-$T/qr-sender-0.3.0-screenshot.png}"
+"$PY" tools/test-web-chrome.py "${SHOT:-$T/qr-sender-0.3.1-screenshot.png}"
 echo "screenshots: $T"

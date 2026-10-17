@@ -170,6 +170,7 @@
             <Button android:id="@+id/pause" style="@style/Ctl" android:contentDescription="@string/pause" android:text="@string/pause_glyph" />
             <Button android:id="@+id/next" style="@style/Ctl" android:contentDescription="@string/next" android:text="@string/next_glyph" />
             <Button android:id="@+id/stop" style="@style/Ctl" android:contentDescription="@string/stop" android:text="@string/stop_glyph" />
+            <Button android:id="@+id/to_loop" style="@style/Ctl" android:contentDescription="@string/to_loop" android:text="@string/to_loop_glyph" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

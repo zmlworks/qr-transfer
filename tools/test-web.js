@@ -35,15 +35,29 @@ const QT1 = ctx.QT1;
   const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
   const noisy = (x, amp) => x.map((v) => v + amp * gauss());
   const listen = (sig) => { const l = new QT1.Listener(R), ev = []; for (let i = 0; i < sig.length; i += 2048) ev.push(...l.feed(sig.subarray(i, i + 2048))); return ev.map((e) => QT1.NAMES[e]); };
-  const ack = (k, amp) => tone(H[k], QT1.ACK_MS, amp || 0.05), G = () => gap(QT1.GAP_MS);
-  let sig = cat(gap(100), ack(0), G(), ack(2), gap(150), ack(1), gap(90), ack(3), G(), ack(1), G(), ack(0), G(), tone(H[4], QT1.DONE_MS, 0.05), gap(100));
-  assert.deepStrictEqual(listen(noisy(sig, 0.008)), ["A0", "B0", "A1", "B1", "A1", "A0", "DONE"]);
+  const ack = (k, amp, ms) => tone(H[k], ms || QT1.ACK_MS, amp || 0.05), G = () => gap(QT1.GAP_MS);
+  let sig = cat(gap(100), ack(0), G(), ack(2), gap(150), ack(1), gap(90), ack(3), G(), ack(2), gap(300), ack(0), G(), tone(H[4], QT1.DONE_MS, 0.05), gap(100));
+  assert.deepStrictEqual(listen(noisy(sig, 0.008)), ["A0", "B0", "A1", "B1", "B0", "A0", "DONE"]);
+  // 0.3.0 receivers play 80 ms acks with 40 ms gaps: still detected
+  sig = cat(gap(100), ack(0, 0.05, 80), gap(40), ack(2, 0.05, 80), gap(200), ack(1, 0.05, 80), gap(40), ack(3, 0.05, 80), gap(100));
+  assert.deepStrictEqual(listen(noisy(sig, 0.006)), ["A0", "B0", "A1", "B1"]);
+  // the field failure of 0.3.0: a quiet tone (−60 dBFS) under louder low-frequency rumble + DC offset (−45 dBFS)
+  const rumble = (n) => Float32Array.from({ length: n }, (_, i) => 0.002 + 0.006 * Math.sin(2 * Math.PI * 120 * i / R) + 0.004 * Math.sin(2 * Math.PI * 47 * i / R));
+  const quiet = cat(gap(300), ack(1, 0.0014), gap(300), ack(2, 0.0014), gap(300));
+  const rb = rumble(quiet.length);
+  assert.deepStrictEqual(listen(noisy(quiet.map((v, i) => v + rb[i]), 0.0001)), ["A1", "B0"]);
   assert.deepStrictEqual(listen(noisy(new Float32Array(R * 2), 0.2)), []);                    // loud noise only
   assert.deepStrictEqual(listen(cat(gap(50), tone(1500, 200, 0.3), gap(50), tone(2200, 200, 0.3), gap(50), tone(2700, 450, 0.3),
     gap(50), tone(1900, 200, 0.3), gap(50), tone(2850, 500, 0.3))), []);                          // 0.1.0 / 0.2.0 tones
   assert.deepStrictEqual(listen(cat(gap(50), tone(H[4], 120, 0.3), gap(50))), []);             // too short for DONE
   assert.deepStrictEqual(listen(cat(gap(50), tone(H[0], 20, 0.3), gap(50))), []);              // 20 ms blip: too short
-  console.log("ok - JS tone listener (A0/A1/B0/B1/DONE, noise, old tones, chunked)");
+  assert.deepStrictEqual(listen(cat(gap(100), tone(H[1] + 35, 300, 0.1), gap(100))), []);      // 35 Hz off (voice harmonic, whistle)
+  // live diagnostics: per-tone level in dBFS (rms of the sinusoid)
+  const L = new QT1.Listener(R, { sensitivity: 5 });
+  L.feed(cat(gap(200), tone(H[3], 300, 0.1)).subarray(0, Math.round(R * 0.4)));
+  assert(Math.abs(L.level[3] - 20 * Math.log10(0.1 / Math.SQRT2)) < 1.5, "level " + L.level[3]);
+  assert.strictEqual(L.sensitivity, 5); assert.strictEqual(L.lastClass, 3);
+  console.log("ok - JS tone listener 0.3.1 (A0/A1/B0/B1/DONE, 80/120 ms, quiet tone under rumble, noise, old tones, off-frequency, levels)");
 
   // scheduler: random event script; the Java test replays it on SlotScheduler and must see the same states
   let script = "";
@@ -74,7 +88,7 @@ const QT1 = ctx.QT1;
     return Float32Array.from({ length: n }, (_, i) => { const env = i < f ? 0.5 - 0.5 * Math.cos(Math.PI * i / f) : i > n - f ? 0.5 - 0.5 * Math.cos(Math.PI * (n - i) / f) : 1;
       return amp * env * Math.sin(2 * Math.PI * hz * i / R16); }); };
   const g16 = (ms) => new Float32Array(R16 * ms / 1000);
-  let a16 = cat(g16(64), t16(H[3], 80, 0.1), g16(40), t16(H[0], 80, 0.1), g16(48), t16(H[2], 80, 0.1), g16(40), t16(H[1], 80, 0.1), g16(40), t16(H[4], 400, 0.1), g16(64));
+  let a16 = cat(g16(64), t16(H[3], 120, 0.1), g16(60), t16(H[0], 120, 0.1), g16(200), t16(H[2], 80, 0.01), g16(40), t16(H[1], 80, 0.01), g16(60), t16(H[4], 400, 0.1), g16(64));
   a16 = noisy(a16, 0.005);
   const l16 = new QT1.Listener(R16), ev16 = []; let cls16 = "";
   for (let i = 0; i + 256 <= a16.length; i += 256) { const e = l16.feed(a16.subarray(i, i + 256)); cls16 += l16.lastClass + " "; ev16.push(...e); }

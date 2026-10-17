@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Headless Chrome (Playwright, system Chrome) checks of web/sender.html, v0.3.0.
+"""Headless Chrome (Playwright, system Chrome) checks of web/sender.html, v0.3.1.
 
+0. defaults: MIC-ACK ("advance on tones") selected, auto-advance (loop) not selected, loop speed disabled.
 1. fake mic (Chrome's fake audio device beeps): MIC-ACK mode, and the codes must NEVER advance without a matching
-   ack — the 0.2.0 bug was a ~600 ms auto-advance.
-2. mic refused (getUserMedia rejects NotAllowedError): LOOP mode, flagged on the page, codes cycle.
-3. acoustic loop: getUserMedia replaced by a synthetic stream fed by an in-page simulated receiver (camera reads the
-   shown chunks with random loss, alternating-bit acks played as real oscillator tones with random ack loss, re-acks,
-   DONE). Must finish, never move past a chunk the receiver lacks, show each slot's chunks in order, and the received
-   frames must reassemble (base45 → envelope → inflate → CRC-32) to the original text.
+   ack; the applied getUserMedia settings (echoCancellation/noiseSuppression/autoGainControl = false) are shown.
+2. mic refused (getUserMedia rejects NotAllowedError): still MIC-ACK mode with a warning, codes do NOT advance
+   (no silent fallback to auto-advance); only the "switch to loop" button starts the loop.
+3. mic test: before sending, the simulated receiver's "test tones" (A0 A1 B0 B1 DONE) all light up in the
+   diagnostics checklist and the event log; per-tone level bars are drawn.
+4. acoustic loop: getUserMedia replaced by a synthetic stream fed by an in-page simulated receiver (camera reads the
+   shown chunks with random loss, alternating-bit acks played as real oscillator tones — 120 ms, quiet (≈ −50 dBFS)
+   under louder 120 Hz rumble + DC, the case 0.3.0 could not hear — with random ack loss, re-acks, DONE). Must
+   finish, never move past a chunk the receiver lacks, show each slot's chunks in order, and the received frames must
+   reassemble (base45 → envelope → inflate → CRC-32) to the original text.
 Usage: python3 tools/test-web-chrome.py [screenshot.png]      (pip install playwright; uses /usr/bin/google-chrome)
 """
 import base64, json, os, pathlib, sys, time, zlib
@@ -15,7 +20,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 URL = (ROOT / "web" / "sender.html").as_uri()
-SHOT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qr-sender-0.3.0-screenshot.png"
+SHOT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qr-sender-0.3.1-screenshot.png"
 CHROME = os.environ.get("CHROME", "/usr/bin/google-chrome")
 B45 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 
@@ -43,36 +48,51 @@ def assemble(frames):
     assert "%08X" % (zlib.crc32(payload) & 0xffffffff) == crc, "CRC mismatch"
     return payload
 
-TEXT_JS = """() => { var t = "電波を使わないデータ受け渡し — v0.3.0 headless test ✓\\n";
+TEXT_JS = """() => { var t = "電波を使わないデータ受け渡し — v0.3.1 headless test ✓\\n";
   for (var i = 0; i < 600; i++) t += Math.random().toString(36).slice(2);
   document.getElementById("text").value = t; document.getElementById("fps").value = "6"; document.getElementById("chunk").value = "200"; return t; }"""
 
 # simulated receiver: camera (30 fps, 70 % read, ~100 ms decode), AckPolicy (dedupe, re-ack 700 ms), FIFO tone player
-# (80 ms tones, 40 ms gap, 25 % of acks lost), DONE when complete (repeated every 2 s while codes are seen)
+# (120 ms tones, 60 ms gap, 25 % of acks lost), DONE when complete (repeated every 2 s while codes are seen).
+# Acoustic path: tones at amplitude 0.004 (≈ −51 dBFS rms) plus a louder 120 Hz rumble (0.01) and DC (0.002):
+# 0.3.0's detector needed 30 % of the full-band energy at the tone and could not hear this.
 FAKE_MIC = """
 (() => {
-  window.__rx = { have: {}, frames: {}, acks: 0, lost: 0, done: false, violations: [] };
+  window.__rx = { have: {}, frames: {}, acks: 0, lost: 0, done: false, violations: [], tests: 0 };
   navigator.mediaDevices.getUserMedia = async function () {
     var ctx = new AudioContext(), dst = ctx.createMediaStreamDestination(), freeAt = 0, rx = window.__rx;
-    var last = [-1, -1], at = [-1e9, -1e9], doneAt = -1e9, queue = [];
+    var last = [-1, -1], at = [-1e9, -1e9], doneAt = -1e9, queue = [], AMP = 0.004;
+    var hum = ctx.createOscillator(), hg = ctx.createGain(); hum.frequency.value = 120; hg.gain.value = 0.01;
+    hum.connect(hg); hg.connect(dst); hum.start();
+    var dc = ctx.createConstantSource(); dc.offset.value = 0.002; dc.connect(dst); dc.start();
+    function beep(tone, t0) {
+      var dur = tone === 4 ? 0.4 : 0.12, o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = QT1.HZ[tone];
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(AMP, t0 + 0.01);
+      g.gain.setValueAtTime(AMP, t0 + dur - 0.01); g.gain.linearRampToValueAtTime(0, t0 + dur);
+      o.connect(g); g.connect(dst); o.start(t0); o.stop(t0 + dur + 0.01);
+      return t0 + dur;
+    }
     function play(tone) {
       if (queue.indexOf(tone) >= 0) return;
       queue.push(tone);
     }
+    // the receiver app's "test tones" button: A0, A1, B0, B1, DONE with 350 ms pauses
+    window.__rxTest = function () {
+      var t = Math.max(ctx.currentTime + 0.05, freeAt);
+      for (var k = 0; k < 5; k++) t = beep(k, t) + 0.35;
+      freeAt = t; rx.tests++;
+    };
     setInterval(function () {               // player thread
       if (!queue.length || ctx.currentTime < freeAt - 0.02) return;
-      var tone = queue.shift(), dur = tone === 4 ? 0.4 : 0.08, t0 = Math.max(ctx.currentTime + 0.05, freeAt);
-      freeAt = t0 + dur + 0.04;
+      var tone = queue.shift(), dur = tone === 4 ? 0.4 : 0.12, t0 = Math.max(ctx.currentTime + 0.05, freeAt);
+      freeAt = t0 + dur + 0.06;
       if (tone !== 4 && Math.random() < 0.25) { rx.lost++; return; }
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = QT1.HZ[tone];
-      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.25, t0 + 0.01);
-      g.gain.setValueAtTime(0.25, t0 + dur - 0.01); g.gain.linearRampToValueAtTime(0, t0 + dur);
-      o.connect(g); g.connect(dst); o.start(t0); o.stop(t0 + dur + 0.01);
+      beep(tone, t0);
     }, 5);
     setInterval(function () {               // camera
       var st = window.__qtSender.state();
-      if (!st.running && !rx.done) return;
+      if (!st.running) return;
       for (var s = 0; s < st.slots; s++) {
         var i = st.shown[s];
         if (i < 0 || Math.random() > 0.7) continue;
@@ -86,7 +106,9 @@ FAKE_MIC = """
         }, 70 + Math.random() * 60); })(i, st.frames[i]);
       }
     }, 33);
-    return dst.stream;
+    var stream = dst.stream, tr = stream.getAudioTracks()[0];
+    tr.getSettings = function () { return { echoCancellation: false, noiseSuppression: false, autoGainControl: false, sampleRate: ctx.sampleRate }; };
+    return stream;
   };
 })();
 """
@@ -104,10 +126,13 @@ def log(p): return p.evaluate("() => window.__qtSender.log")
 
 with sync_playwright() as pw:
     common = ["--autoplay-policy=no-user-gesture-required", "--no-sandbox"]
-    # ---- 1. Chrome's fake microphone: ack mode, no advance at all ----
+    # ---- 0 + 1. defaults; Chrome's fake microphone: ack mode, no advance at all, applied settings shown ----
     b = pw.chromium.launch(executable_path=CHROME, headless=True,
                            args=common + ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
     ctx, p = page_with(b, perms=["microphone"])
+    d = p.evaluate("() => ({ ack: document.getElementById('ack').checked, loop: document.getElementById('loop').checked, fps: document.getElementById('fps').disabled })")
+    assert d == {"ack": True, "loop": False, "fps": True}, d
+    print("ok - defaults: MIC-ACK selected, auto-advance (loop) off, loop speed disabled")
     p.evaluate(TEXT_JS); p.click("#start")
     p.wait_for_function("() => window.__qtSender.state().running")
     time.sleep(6)
@@ -119,31 +144,51 @@ with sync_playwright() as pw:
     assert "A0" in p.inner_text("#slots") and "B0" in p.inner_text("#slots")
     shows = [e for e in log(p) if "show" in e]
     assert len(shows) == 2, shows
-    print("ok - fake mic: MIC-ACK mode, held chunks 1/2 for 6 s without acks (%d stale/foreign tones ignored)" % st["stale"])
+    info = p.inner_text("#micinfo")
+    assert "echoCancellation=false" in info and "noiseSuppression=false" in info and "autoGainControl=false" in info, info
+    print("ok - fake mic: MIC-ACK mode, held chunks 1/2 for 6 s without acks (%d stale/foreign tones ignored); settings: %s"
+          % (st["stale"], info.split("|")[1].strip()))
     ctx.close(); b.close()
 
     b = pw.chromium.launch(executable_path=CHROME, headless=True, args=common)
-    # ---- 2. microphone refused: loop mode, clearly flagged ----
+    # ---- 2. microphone refused: stays MIC-ACK (warning), no auto-advance; loop only via the button ----
     ctx, p = page_with(b, init="navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('denied', 'NotAllowedError'); };")
     p.evaluate(TEXT_JS); p.click("#start")
     p.wait_for_function("() => window.__qtSender.state().running")
-    time.sleep(2)
+    time.sleep(2.5)
+    st = state(p)
+    assert st["mode"] == "ack" and st["shown"] == [0, 1], st
+    m = p.inner_text("#mode")
+    assert "NotAllowedError" in m and "進みません" in m, m
+    assert len([e for e in log(p) if "show" in e]) == 2, "advanced without a microphone!"
+    p.click("#toloop"); time.sleep(2)
     st = state(p)
     assert st["mode"] == "loop", st
-    m = p.inner_text("#mode")
-    assert "LOOP" in m and "NotAllowedError" in m, m
     assert len([e for e in log(p) if "show" in e]) > 8, "loop did not cycle"
-    print("ok - mic refused: LOOP mode shown (%s)" % m.split("(")[-1].rstrip(")"))
+    print("ok - mic refused: no auto-advance (warning shown), loop only after the button")
     ctx.close()
 
-    # ---- 3. acoustic loop with a simulated receiver ----
+    # ---- 3. mic test before sending: the receiver's test tones light up all five checks ----
     ctx, p = page_with(b, init=FAKE_MIC)
+    p.click("#mictest")
+    p.wait_for_function("() => window.__qtSender.state().mic !== null")
+    time.sleep(0.8)
+    p.evaluate("() => window.__rxTest()")
+    p.wait_for_function("() => document.querySelectorAll('.tchk.ok').length === 5", timeout=10000)
+    ev = [e["tone"] for e in state(p)["events"]]
+    assert ev == [0, 1, 2, 3, 4], ev
+    assert not state(p)["running"]
+    assert "DONE" in p.inner_text("#evlog") and "テスト" in p.inner_text("#evlog")
+    print("ok - mic test (before sending): test tones A0 A1 B0 B1 DONE all heard, checklist 5/5, event log")
+    p.click("#mictest")   # stop the test; the transfer opens the mic itself
+
+    # ---- 4. acoustic loop with a simulated receiver (quiet tones under rumble) ----
     text = p.evaluate(TEXT_JS); p.click("#start")
     p.wait_for_function("() => window.__qtSender.state().running")
     t0 = time.time()
-    time.sleep(2.2)
-    p.screenshot(path=SHOT)
-    p.wait_for_function("() => /receiver finished/.test(document.getElementById('status').textContent)", timeout=120000)
+    p.wait_for_function("() => window.__qtSender.state().good >= 3", timeout=30000)
+    p.screenshot(path=SHOT, full_page=True)
+    p.wait_for_function("() => /receiver finished/.test(document.getElementById('status').textContent)", timeout=180000)
     dt = time.time() - t0
     rx = p.evaluate("() => window.__rx")
     lg = log(p)
@@ -157,9 +202,9 @@ with sync_playwright() as pw:
     got = assemble(frames).decode("utf-8")
     assert got == text, "content mismatch"
     heard = [e for e in lg if "heard" in e]
-    print("ok - acoustic loop: %d chunks, %.1f s (%.0f B/s), acks played %d (lost %d), heard %d matching + %d stale; "
-          "content + CRC verified, no skipped chunk" % (total, dt, len(text.encode()) / dt, rx["acks"], rx["lost"],
-          sum(1 for e in heard if e["ok"]), sum(1 for e in heard if not e["ok"])))
+    print("ok - acoustic loop (tones ≈ −51 dBFS under 120 Hz rumble): %d chunks, %.1f s (%.0f B/s), acks played %d (lost %d), "
+          "heard %d matching + %d stale; content + CRC verified, no skipped chunk" % (total, dt, len(text.encode()) / dt, rx["acks"],
+          rx["lost"], sum(1 for e in heard if e["ok"]), sum(1 for e in heard if not e["ok"])))
     ctx.close(); b.close()
 print("screenshot:", SHOT)
 print("web sender chrome tests passed")

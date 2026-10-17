@@ -7,7 +7,7 @@
     <string name="receive">📥 Receive</string>
     <string name="send_via_qr">Send via QR</string>
     <string name="share_web">Share the PC web sender (HTML)…</string>
-    <string name="about">How it works\n• The sender splits data into chunks and shows them as QR codes — two at a time (top: even chunks, bottom: odd chunks). Each code carries: transfer ID, index, total and the CRC-32 of the whole content (format QT1:ID:INDEX:TOTAL:CRC32:DATA).\n• Data is packed with Base45 so the QR uses alphanumeric mode (≈30 % more data per code than base64). Text is compressed (DEFLATE) when that helps.\n• The receiver reads both codes from one camera frame, in any order, shows which chunks are missing, and verifies the CRC-32 when complete.\n• Acknowledgment tones (0.3.0, alternating bit): each chunk is answered with the tone of its code and bit — top code 1350 / 1700 Hz, bottom code 2050 / 2400 Hz, alternating chunk by chunk — and 3050 Hz (long) = all done. With \"advance on tones\" the sender listens with the microphone and advances each code only when it hears the ack for exactly that chunk; a code that was not confirmed simply stays on screen until it is (nothing is skipped). Only if the microphone is refused or unavailable does the sender loop.\n• PC → phone: open web/sender.html (single offline file) in a desktop browser; it can listen with the PC microphone too.\n\nNo internet, Bluetooth, Wi-Fi or NFC is used. Keep the receiving phone ~20–40 cm from the screen so both codes are in view; lower the speed or chunk size if scanning is slow.\n\nLicenses: ZXing core (Apache-2.0), qrcode-generator by Kazuhiko Arase (MIT, web sender). App: MIT © 2026 zmlworks. Built by the AI assistant Grok Bot.</string>
+    <string name="about">How it works\n• The sender splits data into chunks and shows them as QR codes — two at a time (top: even chunks, bottom: odd chunks). Each code carries: transfer ID, index, total and the CRC-32 of the whole content (format QT1:ID:INDEX:TOTAL:CRC32:DATA).\n• Data is packed with Base45 so the QR uses alphanumeric mode (≈30 % more data per code than base64). Text is compressed (DEFLATE) when that helps.\n• The receiver reads both codes from one camera frame, in any order, shows which chunks are missing, and verifies the CRC-32 when complete.\n• Acknowledgment tones (0.3.0+, alternating bit): each chunk is answered with the tone of its code and bit — top code 1350 / 1700 Hz, bottom code 2050 / 2400 Hz, alternating chunk by chunk — and 3050 Hz (long) = all done. With \"advance on tones\" the sender listens with the microphone and advances each code only when it hears the ack for exactly that chunk; a code that was not confirmed simply stays on screen until it is (nothing is skipped). Auto-advance (loop) is used only when you turn \"advance on tones\" off or press ⟳ — never automatically. \"Test tones\" on the receive screen lets you check that the sender (the PC page\'s mic diagnostics) hears all five tones.\n• PC → phone: open web/sender.html (single offline file) in a desktop browser; it can listen with the PC microphone too.\n\nNo internet, Bluetooth, Wi-Fi or NFC is used. Keep the receiving phone ~20–40 cm from the screen so both codes are in view; lower the speed or chunk size if scanning is slow.\n\nLicenses: ZXing core (Apache-2.0), qrcode-generator by Kazuhiko Arase (MIT, web sender). App: MIT © 2026 zmlworks. Built by the AI assistant Grok Bot.</string>
     <string name="send_title">Send text or a file</string>
     <string name="text_hint">Text to send…</string>
     <string name="pick_file">Choose file…</string>
@@ -19,12 +19,12 @@
     <string name="nothing">Nothing to send.</string>
     <string name="chunk_size">Chunk size per QR code</string>
     <string-array name="chunks"><item>Small — 200 bytes (easiest to scan)</item><item>Medium — 400 bytes</item><item>Large — 700 bytes</item><item>X-large — 1000 bytes</item></string-array>
-    <string name="speed">Speed</string>
+    <string name="speed">Auto-advance (loop) speed — not used in MIC / ACK mode</string>
     <string-array name="fps"><item>2 codes / s</item><item>4 codes / s</item><item>6 codes / s</item><item>10 codes / s</item></string-array>
     <string name="ecc_level">QR error correction</string>
     <string-array name="ecc"><item>L (7 %) — most data</item><item>M (15 %)</item><item>Q (25 %) — most robust</item></string-array>
-    <string name="ack_mode">Advance on the receiver\'s tones (microphone)</string>
-    <string name="ack_help">Recommended. The receiver (0.3.0+) answers every chunk with a tone that names its code and bit (top: 1350 / 1700 Hz, bottom: 2050 / 2400 Hz, alternating). The sender advances a code only when it hears the ack for exactly that chunk — no timeouts, stale acks are ignored, an unconfirmed code stays on screen — and stops on the 3050 Hz done tone. Off, or without microphone permission, the codes simply loop.</string>
+    <string name="ack_mode">Advance on the receiver\'s tones (microphone, default). Off = auto-advance (loop)</string>
+    <string name="ack_help">Recommended. The receiver answers every chunk with a tone that names its code and bit (top: 1350 / 1700 Hz, bottom: 2050 / 2400 Hz, alternating). The sender advances a code only when it hears the ack for exactly that chunk — no timeouts, stale acks are ignored, an unconfirmed code stays on screen — and stops on the 3050 Hz done tone. It never switches to auto-advance by itself: without a microphone the codes wait and the ⟳ button offers the loop. Tip: on the receiver, \"test tones\" plays all five tones.</string>
     <string name="start_send">▶ Start</string>
     <string name="preparing">Preparing…</string>
     <string name="qr_desc">QR code frame</string>
@@ -36,8 +36,8 @@
     <string name="next_glyph" translatable="false">▶▶</string>
     <string name="pause_glyph" translatable="false">⏸</string>
     <string name="stop_glyph" translatable="false">■</string>
-    <string name="mic_denied">Microphone denied: LOOP mode (codes cycle without acks).</string>
-    <string name="mic_failed">Microphone unavailable: LOOP mode (codes cycle without acks).</string>
+    <string name="mic_denied">Microphone denied: the codes will not advance by themselves. Press ⟳ for auto-advance (loop).</string>
+    <string name="mic_failed">Microphone unavailable: the codes will not advance by themselves. Press ⟳ for auto-advance (loop).</string>
     <string name="receiver_done">Receiver finished (done tone heard).</string>
     <string name="camera_denied">Camera permission is needed to receive.</string>
     <string name="no_camera">No camera found.</string>
@@ -69,4 +69,18 @@
     <string name="heard_ok">heard %1$s ✓</string>
     <string name="heard_stale">heard %1$s (stale, ignored)</string>
     <string name="silence_hint">No matching ack for a while — still showing (nothing skipped). Check the receiver\'s volume and aim.</string>
+    <string name="mode_ack_nomic">⚠ MIC / ACK mode without a microphone (%1$s) — codes do not advance</string>
+    <string name="nomic_hint">Allow the microphone, or press ⟳ to switch to auto-advance (loop).</string>
+    <string name="loop_reason_user">switched by you</string>
+    <string name="to_loop">Switch to auto-advance (loop)</string>
+    <string name="to_loop_glyph" translatable="false">⟳</string>
+    <string name="test_tones">🔊 Test tones</string>
+    <string name="ack_none_yet">No ack tone played yet</string>
+    <string name="ack_played">%1$s  (total %2$d)</string>
+    <string name="media_volume">Media volume %1$d / %2$d</string>
+    <string name="warn_beep_off">⚠ Ack tones are off — the sender cannot advance</string>
+    <string name="warn_no_output">⚠ Audio output could not be opened</string>
+    <string name="warn_volume_zero">⚠ Media volume is 0 — press volume up</string>
+    <string name="warn_volume_low">⚠ Media volume is low — turn it up</string>
+    <string name="warn_headphones">⚠ Headphones / Bluetooth connected: the tones may not come out of the speaker</string>
 </resources>
