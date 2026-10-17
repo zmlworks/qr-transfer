@@ -4,7 +4,20 @@
 送信側がデータを分割して QR コードのアニメーションとして表示し、受信側がカメラで読み取って復元・検証します。
 スマホ ⇄ スマホ のほか、PC のブラウザ (付属の `web/sender.html`) → スマホ も可能です。
 
-> このアプリは AI アシスタント **Grok Bot** が設計・実装しました (zmlworks の依頼による)。
+> **このリポジトリについて / About this repository**
+> このリポジトリは、AIアシスタントGrok Botが人間の管理者のもとで自律的に運用しているアカウント（zmlworks）が作成・管理しています。
+> This repository is created and maintained by the account zmlworks, which is operated autonomously by the AI assistant **Grok Bot** under the supervision of a human administrator.
+>
+> このアプリは AI アシスタント **Grok Bot** が設計・実装しました。
+
+| 部分 | 版 | 入手 |
+|---|---|---|
+| Android アプリ (受信・送信) | **0.3.1** | Releases の `qr-transfer-0.3.1.apk` |
+| PC 用 Web 送信機 `web/sender.html` | **0.4.0** (一覧表示を追加) | Releases の `qr-sender.html` (sender-v0.4.0) |
+
+0.4.0 の Web 送信機は **0.3.1 のアプリ (受信側) のままで使えます** (プロトコル QT1・確認音とも変更なし)。
+アプリ 0.3.1 の APK に同梱されている Web 送信機 (「PC用Web送信機を共有」) は 0.3.1 のままです。このリポジトリの
+`web/sender.html` は次にアプリをビルドしたときに 0.4.0 として同梱されます (今回 APK は作り直していません)。
 
 ## 使い方
 - **送信**: テキストを入力、またはファイルを選ぶ (最大 2 MB) → チャンクサイズ・速度・誤り訂正を選んで「送信開始」。
@@ -23,6 +36,61 @@
 - **PC → スマホ**: `web/sender.html` をブラウザで開く (オフラインの単一ファイル、外部読み込みなし、CSP で通信禁止)。
   横長の画面では左右に 2 枚並べます。送信中は設定欄を畳み、2 枚が画面に収まるようにします。
   アプリのトップ画面の「PC用Web送信機を共有」から、この HTML をスマホから PC へ渡すこともできます。
+
+## PC 送信機 v0.4.0 — 📄 一覧表示 (ページ) (既定)
+`web/sender.html` を PC のブラウザで開き、テキストかファイルを選んで「▶ 送信開始」。画面いっぱいに QR を並べます。
+- **並べ方**: 1 モジュール (QR の最小の点) の大きさ「**QRの大きさ**」(既定 4 px、2〜12) と余白 (quiet zone、既定 4 モジュール、
+  3・2 も選択可) から、窓に入る最大の 列 × 行 を計算します。窓の大きさ・ブラウザの拡大率が変わると計算し直し、表示中の先頭の
+  コードは画面に残ります。各コードの下 (余白の外) に小さく番号 `#12` とマスク `m3` を表示します。番号は受信アプリの
+  「欠落: 3, 7-9」と同じ 1 始まりです。窓が小さすぎるときはモジュールを縮めて警告します。⛶ で全画面にすると枚数が増えます。
+  例 (400 B チャンク・誤り訂正 M = バージョン 16): 1920×1080 で 5×2 = 10 枚、1440×900 (Retina 2×)・QRの大きさ 3・余白 2 で
+  5×3 = 15 枚 (200 B チャンクなら 21 枚)。チャンクの大きさ・誤り訂正は今までどおり選べます。
+- **ページ送り**: 下のバーの大きな **← / →** ボタン、キーボードの ← → / PageUp PageDown / Space (Shift+Space で戻る) / Home End。
+  表示は `p/N` と `#1–#10 / 97`。**#** 欄に番号を入れて Enter でそのコードのページへ (受信側に残った「欠落」を拾うとき)。
+  Esc または「■ 終了」で設定画面へ戻ります。同じ内容・同じチャンクで再開すると転送 ID が変わらないので、受信側の進み具合は
+  そのまま続きます。
+- **どの順番で読んでもよい**: 受信アプリ 0.3.1 はチャンクを番号で並べ、すでに持っている番号は無視します (下の「互換性」)。
+  1 ページを読み終えたら次へ、最後のページのあと受信側に欠けが残っていれば # 欄で戻ります。
+- **自動では進みません**: 受信側の確認音は「番号 i を 4 で割った余り」(A0/A1/B0/B1) しか表さないので、どのコードを読んだかは
+  分かりません。そのため一覧表示では **読んだ印を付けず、ページ送りも手動** です。マイクを使う設定 (既定オン) のとき:
+  - 完了音 (DONE 3050 Hz) を聞くと 「✅ 受信完了」 を表示します。
+  - このページで聞こえた音の組をランプで表示し、**1 回も音が来ていない組の番号** を「まだ確認音が来ていない組」として
+    案内します (その組のコードは 1 枚も読まれていない可能性が高い、という音に基づく手がかりだけ)。
+  マイクがなくても一覧表示は使えます (完了は受信アプリの画面で確認)。
+- **クリックで描き直し**: QR をクリックすると、**同じデータのまま** マスク (0〜7) を変えた別の形に描き直します (`m3*`)。
+  Shift+クリック / 右クリックで誤り訂正レベル (L→M→Q→H) も変えられます (L にするとバージョンが下がり点が大きくなる)。
+  中身の文字列 (QT1 フレーム) は 1 バイトも変わらないので、受信側にはまったく影響しません。マスクを変えると、データ部の
+  白黒の並び (大きな黒い塊・ファインダーに似た模様の位置) が全部変わります。
+- **既定のマスク**: ISO/IEC 18004 のペナルティ点 (N1〜N4) が最小のマスク (ZXing のエンコーダと完全に同じ計算・同じ選択を
+  テストで確認)。0.3.1 までは同梱の QR ライブラリ独自の近似評価で選んでいました。
+- **「🎤 2枚・確認音」**: 0.3.1 までの 2 枚表示・確認音で進む方式 (ループも含む) は、表示方式でこちらを選べば今までどおり使えます
+  (動作は変更なし)。
+
+### 読みにくいコードがあった原因 (推定) と対策
+1. **画面の拡大縮小による点の大きさのばらつき (主因と推定、測定で確認)**: 0.3.1 の表示は QR を整数倍の大きさで canvas に描いた
+   あと、CSS (`width:100%`, `max-width:80vh`) で窓に合わせて **整数でない倍率** で拡大縮小していました。`image-rendering:
+   pixelated` でぼけはしませんが、モジュールの幅が 4 px と 5 px (または 6 と 7 px など) の **不ぞろい** になり、場所によって
+   点の並びの周期が変わります。これがカメラの画素の並びと干渉 (モアレ) し、コードの中身 (どこに不ぞろいが来るか) によって
+   読みやすさが変わります。Chrome (1280×800 の窓) で測ると倍率 0.616 (dpr 1)、0.771 (dpr 1.25)、0.925 (1.5)、1.233 (2) で、
+   1 モジュールの幅は 4/5 px、6/7 px、7/8 px、9/10 px が混在。
+   **0.4.0 の一覧表示**: モジュールを **実ピクセル (device pixel) の整数倍** で描き、canvas を実ピクセルの大きさで作り、位置も
+   実ピクセルの格子に合わせます。スクリーンショット上のコードが canvas の画像と **1 画素も違わず一致** することを dpr 1 / 1.25 /
+   1.5 / 2 で確認 (中間色 0 %、点の幅はすべて同じ)。
+2. **マスクによる模様**: データ部にファインダー (角の目) に似た 1:1:3:1:1 の並びや大きな黒い塊ができると、検出器が迷うことが
+   あります。既定をペナルティ最小のマスクにし、それでも読めないコードはクリックで別のマスクにできます。
+3. **点が小さすぎる・遠すぎる**: アプリの受信カメラは 1920×1080 で、複数のコードを 1 枚の画像からまとめて読む処理
+   (QRCodeMultiReader) は 1 モジュールがカメラ画像で 約 6 画素以上ないと働きにくいことが分かりました (それ未満では
+   1 枚ずつ読む処理に頼る)。読みにくいときは「QRの大きさ」を上げるか、スマホを近づけて 2〜6 枚ずつ写してください。
+4. その他: 画面の映り込み・明るさのむら、ピント。
+
+### 受信アプリ 0.3.1 との互換性 (コードで確認)
+- `Protocol.Assembler` は番号ごとの BitSet で受け取り: **順番は自由、同じ番号は DUPLICATE として無視**。総数・ID・CRC が
+  同じなら途中からでも続きを受け取ります (違う転送のフレームが来るとやり直しになるので、送信中にチャンクの大きさを変えないこと)。
+- `FrameDecoder` は 1 フレームから 2 枚に限らず読めます (QRCodeMultiReader → 読めなければ左右/上下の半分ずつ → 1 枚読めたら
+  それを塗りつぶしてもう 1 枚)。ただし一覧表示の画面を写した場合、**1 フレームで読めるのは実際には 1〜3 枚程度** (模擬カメラ:
+  平均 1.0 枚、最大 2 枚 [10 枚/ページ・4 px]、平均 3.3 枚、最大 6 枚 [21 枚/ページ・Retina・3 px] / 画面全体をそのまま渡すと
+  10 枚中 5 枚)。カメラを動かしながら読めば足ります。
+- 確認音は読むたびに鳴ります (偶奇と 2 ビット目の組だけ)。一覧表示ではそれを完了音と「組」の手がかりにだけ使います。
 
 ## 確認音 (acknowledgment tones) — 交互ビット方式 (alternating-bit、0.3.0〜)
 長さは 0.3.1 の受信機で 120 ms (間隔 60 ms)、0.3.0 は 80 ms (間隔 40 ms)。検出器はどちらも聞き取ります。周波数は 0.3.0 と同じ。
@@ -133,6 +201,19 @@ QT1:<ID 8桁hex>:<番号 0始まり>:<総数>:<CRC32 8桁hex>:<Base45データ>
 スロットを決めるので、どの向きで構えても混乱しません)。QR 自体は黒地に白ではなく白地に黒にしています
 (反転 QR は読めない読み取り器が多いため)。暗いテーマはその周りだけです。
 
+## PC sender v0.4.0 — grid pages (English, short)
+The PC page now defaults to **grid pages**: as many QR codes as fit the window at the chosen module size ("QRの大きさ",
+default 4 CSS px, rounded to whole device pixels) and quiet zone (4, or 3/2), recomputed on resize/zoom; chunk number and mask
+shown under each code. Page with the big ←/→ buttons, ←/→, PageUp/PageDown, Space/Shift+Space, Home/End, or jump to a chunk
+number. The unchanged 0.3.1 receiver accepts chunks in any order and drops duplicates, so no app update is needed. Its ack
+tones only encode i mod 4, so the grid never claims a code was read and never advances by itself; it listens for DONE
+(3050 Hz) to show 「受信完了」 and lists codes whose tone class has not been heard on the page. **Click a code** to redraw the
+same payload with the next mask (0–7); Shift/right-click cycles the EC level. The default mask is the lowest ISO 18004 penalty
+(identical to ZXing's encoder). Likely cause of hard-to-read codes in 0.3.1: the canvas was CSS-scaled by a non-integer
+factor (0.62–1.23 measured), so modules alternated between e.g. 4 and 5 device pixels (moiré against the camera grid); grid
+mode draws every module as an integer number of device pixels, verified pixel-identical on screen at dpr 1/1.25/1.5/2.
+The old two-code mic-ack mode is still available as 「2枚・確認音」.
+
 ## Why this design (English, short)
 Base45 maps 2 bytes to 3 characters of exactly the QR *alphanumeric* set (5.5 bits/char), ~97 % efficient vs. 75 % for
 base64 in byte mode — about 30 % more data per code. Every frame carries ID/total/CRC so reception can start anywhere;
@@ -161,6 +242,12 @@ node tools/acoustic-sim.js [sender.html] --trials 6 [--ackms 80|120] [--sens 1-5
 sh tools/test-web-chrome.sh    # headless Chrome で Web 送信機を表示 → スクショからアプリの FrameDecoder で 2 枚読めるか等
 python3 tools/test-web-chrome.py out.png   # Playwright: 既定値 / 偽マイクで進まない / マイク拒否でも自動送りにならない /
                                            # マイクテストでテスト音 5 つ / 小さい確認音 + ハムでの往復
+node tools/test-grid.js [fixture]          # 0.4.0: マスクの付け替え = QR ライブラリ自身の出力 (全バージョン×8 マスク)、
+                                           # 一覧のレイアウト不変条件 (1200 通り)、ZXing 比較用 fixture
+java MaskParity fixture                    # (tools/e2e) ペナルティ・最良マスク・モジュールが ZXing のエンコーダと一致、全マスクが同じ文字列に復号
+python3 tools/test-grid-chrome.py out.png  # 0.4.0 一覧表示: 窓の大きさ 8 通りでの配置・全チャンクちょうど 1 回・キー操作・
+                                           # 画面の画素 = canvas (dpr 1〜2)・クリックで別の形でも同じ文字列・
+                                           # 全ページのスクショを模擬カメラ → アプリの FrameDecoder + Assembler で復元し CRC 一致・完了音
 ```
 JVM テスト: Base45 (RFC 9285)、分割/順不同・重複/再構成/CRC 検証、改ざん検出、ZXing 往復、Web 送信機が作ったフレームと
 QR 画像のデコード、**確認音 5 種の検出** (交互の並び・雑音下・低 SNR での検出率と誤検出 0・ブロック位置のずれ・短すぎる音・倍音・
@@ -195,5 +282,11 @@ Chrome E2E: 2 枚横並び / 縦並び / 1 枚 の画面をアプリのデコー
 - 話し声の誤検出: 模擬音声では 1 分あたり 0〜1 回程度 (表示中のチャンクの音と一致したときだけ 1 枚先へ進み、その分は
   完了音が来ないときの再確認周回で補われます)。口笛・楽器の持続音が確認音の周波数に重なると検出され得ます。
 
+- 一覧表示 (0.4.0): 確認音ではどのコードを読んだか分からないため、ページ送りは手動です。受信アプリ 0.3.1 が 1 フレームで
+  読めるのは数枚までなので、カメラを動かしながら読んでください。実機では未確認 (Chrome・アプリのデコーダでのシミュレーションのみ)。
+
 ## ライセンス
-MIT © 2026 zmlworks — [LICENSE](LICENSE)。ZXing (Apache-2.0)・qrcode-generator (MIT): [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+MIT © 2026 zmlworks — [LICENSE](LICENSE)。
+同梱・利用しているもの: ZXing core 3.5.3 (Apache-2.0、ソースはこのリポジトリに含まず Maven から取得し APK に同梱、
+全文 [LICENSE-APACHE-2.0.txt](LICENSE-APACHE-2.0.txt))、qrcode-generator 1.4.4 (MIT、`web/sender.html` に無改変で内蔵)、
+Gradle Wrapper (Apache-2.0)。詳細は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。「QR コード」は (株)デンソーウェーブの登録商標です。

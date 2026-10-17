@@ -2,6 +2,7 @@
 <!--
   QR分割転送 Web送信機 / QR split-transfer web sender  (QT1 protocol)
   Single file, fully offline: open this file in a desktop browser and point the phone's receiver at it.
+  v0.4.0: 「一覧表示 (ページ)」 grid pages (default) + click-to-redraw (same payload, other mask); works with receiver app 0.3.1.
   Copyright (c) 2026 zmlworks — MIT License. Built by the AI assistant Grok Bot.
   Bundles "QR Code Generator for JavaScript" (c) 2009 Kazuhiko Arase — MIT License (see below).
 -->
@@ -10,7 +11,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;">
-<title>QR分割転送 — 送信 (QT1, v0.3.1)</title>
+<title>QR分割転送 — 送信 (QT1, v0.4.0)</title>
 <style>
   :root { --bg:#002218; --bg2:#00140E; --panel:#0A3226; --text:#C6CFC6; --dim:#7F8F86; --accent:#3D0105; --hi:#00A2E8; }
   * { box-sizing: border-box; }
@@ -71,33 +72,67 @@
   small { color:var(--dim); }
   body.running .opt { display:none; }   /* while sending: only the controls, so both codes fit the screen */
   body.running #setup { flex:0 0 auto; }
+  /* v0.4.0: display choice + grid pages */
+  body.vgrid .classic { display:none; }
+  body:not(.vgrid) #gridopts { display:none; }
+  body.gridding { overflow:hidden; }
+  #gridview { position:fixed; left:0; top:0; width:100vw; height:100vh; background:#fff; z-index:10; }
+  #gridview[hidden] { display:none; }
+  #gridarea { position:absolute; left:0; top:0; right:0; overflow:hidden; background:#fff; }
+  #gridarea canvas { position:absolute; image-rendering:crisp-edges; image-rendering:pixelated; cursor:pointer; }
+  .glabel { position:absolute; font:11px/14px ui-monospace, monospace; color:#666; text-align:center; overflow:hidden; white-space:nowrap; pointer-events:none; }
+  .glabel.user { color:#0057B8; font-weight:600; }
+  #gridbar { position:absolute; left:0; right:0; bottom:0; height:70px; overflow:hidden; background:var(--bg2); color:var(--text); padding:4px 8px; font:13px/1.5 system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  #gridbar .r1 { display:flex; gap:10px; align-items:center; white-space:nowrap; overflow:hidden; height:40px; }
+  #gridbar .r2 { height:22px; line-height:22px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#FFB74D; }
+  #gridbar button { padding:2px 10px; }
+  #gridbar button.big { font-size:22px; line-height:1; padding:4px 26px; }
+  #gpage { font:600 18px ui-monospace, monospace; min-width:4.5em; text-align:center; color:#fff; }
+  #gjump { width:5em; background:var(--panel); color:var(--text); border:1px solid #1E4A3C; border-radius:4px; padding:2px 4px; }
+  #gtones .t { padding:0 5px; margin-left:2px; border-radius:8px; border:1px solid #1E4A3C; color:var(--dim); }
+  #gtones .t.on { background:#2E7D32; color:#fff; }
+  #gdone { position:absolute; left:50%; top:40%; transform:translate(-50%,-50%); background:#0B4A2E; color:#fff; border:2px solid #2E7D32;
+           border-radius:8px; padding:20px 32px; font:600 26px system-ui, sans-serif; text-align:center; box-shadow:0 4px 24px #0008; }
+  #gdone[hidden] { display:none; }
+  #gdone small { display:block; font-size:13px; font-weight:400; color:#C8E6C9; margin:6px 0 10px; }
 </style>
 </head>
 <body>
-<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.3.1)</small></h1><span id="status">準備完了 / ready</span></header>
+<header><h1>QR分割転送 — 送信 <small>(QT1 / offline / v0.4.0)</small></h1><span id="status">準備完了 / ready</span></header>
 <main>
 <section id="setup">
   <label class="opt" for="text">テキスト / Text</label>
   <textarea class="opt" id="text" placeholder="送るテキスト… / text to send…"></textarea>
   <div class="opt" id="drop">または ファイルをドロップ / or drop a file here &nbsp; <input type="file" id="file"></div>
   <div class="opt" id="fileinfo"><small></small></div>
+  <fieldset class="opt" id="viewbox"><legend>表示方式 / display</legend>
+    <label><input type="radio" name="view" id="vgrid" checked> 📄 一覧表示 (ページ) — 画面いっぱいに QR を並べ、読めたら次のページへ (PC 向け・既定) / grid pages (default)</label><br>
+    <label><input type="radio" name="view" id="vtwo"> 🎤 2枚・確認音 — 0.3.1 までと同じ方式 / two codes + ack tones (as in 0.3.1)</label>
+  </fieldset>
+  <fieldset class="opt" id="gridopts"><legend>一覧表示の設定 / grid options</legend>
+    <label title="1 モジュール (QR の最小の点) の大きさ。画面の実ピクセルの整数倍に丸めます / module size, rounded to whole device pixels">QRの大きさ <input type="range" id="msize" min="2" max="12" step="1" value="4"> <span id="msizev">4</span> px/モジュール</label>
+    <label>余白 <select id="quiet"><option value="4" selected>4 (標準)</option><option value="3">3</option><option value="2">2</option></select> モジュール</label><br>
+    <label><input type="checkbox" id="gridmic" checked> 🎤 受信側の完了音 (3050 Hz) を聞いて「受信完了」を表示 / listen for the receiver's DONE tone</label><br>
+    <small>QR をクリック = 同じデータのまま別の形 (マスク 0〜7) に描き直し。Shift+クリック / 右クリック = 誤り訂正レベルを変更 (L→M→Q→H)。
+    ページ送り: ← → / PageUp PageDown / Space。読み取り順は自由です (受信側は番号で並べ替え、重複は無視)。</small>
+  </fieldset>
   <div class="row opt">
     <label>チャンク <select id="chunk"><option value="200">小 200 B</option><option value="400" selected>中 400 B</option><option value="700">大 700 B</option><option value="1000">特大 1000 B</option></select></label>
     <label>誤り訂正 <select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
   </div>
-  <fieldset class="opt" id="modebox"><legend>送り方 / how codes advance</legend>
+  <fieldset class="opt classic" id="modebox"><legend>送り方 / how codes advance</legend>
     <label><input type="radio" name="mode" id="ack" checked> 🎤 確認音で進める (マイク、推奨・既定) / advance on the receiver's tones (mic, default)</label><br>
     <label><input type="radio" name="mode" id="loop"> 🔁 自動送り (ループ、確認音なし) / auto-advance (loop, no acks)</label>
     <label id="fpsbox">— 速度 <select id="fps"><option>2</option><option selected>4</option><option>6</option><option>10</option></select> 枚/秒 fps</label>
   </fieldset>
-  <div class="row opt">
+  <div class="row opt classic">
     <label><input type="checkbox" id="two" checked> 2枚同時に表示 (約2倍速) / two codes at once (~2× faster)</label>
   </div>
   <div class="row">
     <button class="primary" id="start">▶ 送信開始 / Start</button>
-    <button id="pause" disabled>⏸</button>
-    <button id="prev" disabled>◀</button>
-    <button id="next" disabled>▶</button>
+    <button id="pause" class="classic" disabled>⏸</button>
+    <button id="prev" class="classic" disabled>◀</button>
+    <button id="next" class="classic" disabled>▶</button>
     <button class="stop" id="stop" disabled>■</button>
   </div>
   <small class="opt">プロトコル QT1: <code>QT1:ID:INDEX:TOTAL:CRC32:BASE45</code> — 英数字モードQRで送ります。CRC32は元データ全体のもの。
@@ -136,6 +171,25 @@
   </section>
 </section>
 </main>
+<div id="gridview" hidden>
+  <div id="gridarea"></div>
+  <div id="gdone" hidden>✅ 受信完了<small>受信側の完了音 (3050 Hz) を検出しました — 受信アプリで CRC 一致を確認してください<br>DONE tone heard</small><button id="gdoneclose">閉じる / close</button></div>
+  <div id="gridbar">
+    <div class="r1">
+      <button id="gprev" class="big" title="前のページ / previous page (← PageUp Shift+Space)">←</button>
+      <span id="gpage">1/1</span>
+      <button id="gnext" class="big" title="次のページ / next page (→ PageDown Space)">→</button>
+      <span id="grange"></span>
+      <label title="番号のコードがあるページへ / go to the page of chunk #">#<input id="gjump" type="number" min="1"></label>
+      <label>QRの大きさ <input type="range" id="gmsize" min="2" max="12" step="1" value="4"> <span id="gmsizev">4</span></label>
+      <span id="gtones"></span>
+      <button id="gfull" title="全画面 / fullscreen">⛶</button>
+      <button class="stop" id="gstop" title="終了 / stop (Esc)">■ 終了</button>
+      <span id="ginfo"></span>
+    </div>
+    <div class="r2" id="ghint"></div>
+  </div>
+</div>
 <script id="qrlib">
 // ===== qrcode-generator 1.4.4 — Copyright (c) 2009 Kazuhiko Arase — MIT License — https://github.com/kazuhikoarase/qrcode-generator =====
 //---------------------------------------------------------------------
@@ -2436,6 +2490,190 @@ var qrcode = function() {
     return qrcode;
 }));
 </script>
+<script id="qrsym">
+// ---- QR symbol variants (v0.4.0, DOM-free so tools/test-grid.js can run it under node) ----
+// The bundled qrcode-generator always picks its own mask. To show the SAME payload as a different symbol, the
+// finished matrix is re-masked here: data/EC modules are un-masked with the library's mask and masked again with
+// the chosen one, and both copies of the format information (EC level + mask, BCH(15,5)) are rewritten. Payload
+// bytes, version and EC level are unchanged, so any standard decoder (ZXing in the app) reads the same text.
+// The default mask is the one with the lowest ISO/IEC 18004 penalty score (rules N1–N4), like ZXing's encoder.
+var QRSym = (function () {
+  "use strict";
+  var ALIGN = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+    [6, 30, 54], [6, 32, 58], [6, 34, 62], [6, 26, 46, 66], [6, 26, 48, 70], [6, 26, 50, 74], [6, 30, 54, 78],
+    [6, 30, 56, 82], [6, 30, 58, 86], [6, 34, 62, 90], [6, 28, 50, 72, 94], [6, 26, 50, 74, 98], [6, 30, 54, 78, 102],
+    [6, 28, 54, 80, 106], [6, 32, 58, 84, 110], [6, 30, 58, 86, 114], [6, 34, 62, 90, 118], [6, 26, 50, 74, 98, 122],
+    [6, 30, 54, 78, 102, 126], [6, 26, 52, 78, 104, 130], [6, 30, 56, 82, 108, 134], [6, 34, 60, 86, 112, 138],
+    [6, 30, 58, 86, 114, 142], [6, 34, 62, 90, 118, 146], [6, 30, 54, 78, 102, 126, 150], [6, 24, 50, 76, 102, 128, 154],
+    [6, 28, 54, 80, 106, 132, 158], [6, 32, 58, 84, 110, 136, 162], [6, 26, 54, 82, 110, 138, 166],
+    [6, 30, 58, 86, 114, 142, 170]];                                   // index = version
+  var ECL_BITS = { L: 1, M: 0, Q: 3, H: 2 }, ECLS = ["L", "M", "Q", "H"];
+  var fnCache = {};
+
+  function maskBit(m, i, j) {   // i = row, j = column; true = invert
+    switch (m) {
+      case 0: return (i + j) % 2 === 0;
+      case 1: return i % 2 === 0;
+      case 2: return j % 3 === 0;
+      case 3: return (i + j) % 3 === 0;
+      case 4: return (Math.floor(i / 2) + Math.floor(j / 3)) % 2 === 0;
+      case 5: return (i * j) % 2 + (i * j) % 3 === 0;
+      case 6: return ((i * j) % 2 + (i * j) % 3) % 2 === 0;
+      default: return ((i + j) % 2 + (i * j) % 3) % 2 === 0;
+    }
+  }
+  /** 1 = function module (finder + separator + format, timing, alignment, version info), 0 = data/EC module */
+  function functionMap(version) {
+    if (fnCache[version]) return fnCache[version];
+    var n = version * 4 + 17, f = new Uint8Array(n * n), r, c;
+    function set(rr, cc) { if (rr >= 0 && cc >= 0 && rr < n && cc < n) f[rr * n + cc] = 1; }
+    for (r = 0; r < 9; r++) for (c = 0; c < 9; c++) set(r, c);
+    for (r = 0; r < 9; r++) for (c = n - 8; c < n; c++) set(r, c);
+    for (r = n - 8; r < n; r++) for (c = 0; c < 9; c++) set(r, c);
+    for (c = 0; c < n; c++) { set(6, c); set(c, 6); }
+    var pos = ALIGN[version];
+    for (var a = 0; a < pos.length; a++) for (var b = 0; b < pos.length; b++) {
+      var cr = pos[a], cc = pos[b];
+      if ((cr < 9 && cc < 9) || (cr < 9 && cc > n - 10) || (cr > n - 10 && cc < 9)) continue;   // overlaps a finder
+      for (r = -2; r <= 2; r++) for (c = -2; c <= 2; c++) set(cr + r, cc + c);
+    }
+    if (version >= 7) for (r = 0; r < 6; r++) for (c = n - 11; c < n - 8; c++) { set(r, c); set(c, r); }
+    return (fnCache[version] = f);
+  }
+  /** 15-bit format word for (EC level bits << 3 | mask): BCH(15,5) with generator 0x537, XOR 0x5412 */
+  function formatBits(data) {
+    var d = data << 10;
+    for (var i = 14; i >= 10; i--) if ((d >> i) & 1) d ^= 0x537 << (i - 10);
+    return ((data << 10) | d) ^ 0x5412;
+  }
+  /** module positions of format bit i (same placement as the bundled generator / ISO 18004 fig. 25) */
+  function formatPos(n, i) {
+    var v = i < 6 ? [i, 8] : i < 8 ? [i + 1, 8] : [n - 15 + i, 8];
+    var h = i < 8 ? [8, n - i - 1] : i < 9 ? [8, 7] : [8, 14 - i];
+    return [v, h];
+  }
+  function writeFormat(mat, n, eclBits, mask) {
+    var bits = formatBits((eclBits << 3) | mask);
+    for (var i = 0; i < 15; i++) {
+      var p = formatPos(n, i), on = (bits >> i) & 1;
+      mat[p[0][0] * n + p[0][1]] = on; mat[p[1][0] * n + p[1][1]] = on;
+    }
+    mat[(n - 8) * n + 8] = 1;   // dark module
+  }
+  function readMask(mat, n, eclBits) {   // which mask the generator used (format copy along column 8)
+    var best = -1, bestD = 99;
+    for (var m = 0; m < 8; m++) {
+      var bits = formatBits((eclBits << 3) | m), d = 0;
+      for (var i = 0; i < 15; i++) { var p = formatPos(n, i)[0]; if (mat[p[0] * n + p[1]] !== ((bits >> i) & 1)) d++; }
+      if (d < bestD) { bestD = d; best = m; }
+    }
+    return best;
+  }
+  /** ISO/IEC 18004 §7.8.3 penalty (N1 = 3, N2 = 3, N3 = 40, N4 = 10), computed exactly like ZXing's MaskUtil (rule 3's light runs must lie inside the symbol) */
+  function penalty(mat, n) {
+    var p1 = 0, p2 = 0, p3 = 0, dark = 0, r, c;
+    function at(rr, cc) { return rr < 0 || cc < 0 || rr >= n || cc >= n ? 0 : mat[rr * n + cc]; }
+    for (var dir = 0; dir < 2; dir++) for (r = 0; r < n; r++) {
+      var run = 1, prev = dir ? mat[r] : mat[r * n];
+      for (c = 1; c < n; c++) {
+        var v = dir ? mat[c * n + r] : mat[r * n + c];
+        if (v === prev) run++; else { if (run >= 5) p1 += 3 + run - 5; run = 1; prev = v; }
+      }
+      if (run >= 5) p1 += 3 + run - 5;
+    }
+    for (r = 0; r < n - 1; r++) for (c = 0; c < n - 1; c++) {
+      var x = mat[r * n + c];
+      if (x === mat[r * n + c + 1] && x === mat[(r + 1) * n + c] && x === mat[(r + 1) * n + c + 1]) p2 += 3;
+    }
+    var core = [1, 0, 1, 1, 1, 0, 1];
+    for (var d2 = 0; d2 < 2; d2++) for (r = 0; r < n; r++) for (c = -4; c < n; c++) {
+      var g = d2 ? function (k) { return at(c + k, r); } : function (k) { return at(r, c + k); }, ok = true, k;
+      for (k = 0; k < 7 && ok; k++) if (g(k) !== core[k]) ok = false;
+      if (!ok) continue;
+      var lb = true, la = true;
+      if (c - 4 < 0) lb = false;            // as ZXing: the 4 light modules must lie inside the symbol
+      if (c + 10 >= n) la = false;
+      for (k = 1; k <= 4; k++) { if (g(-k)) lb = false; if (g(6 + k)) la = false; }
+      if (lb || la) p3 += 40;   // once per occurrence (as ZXing's MaskUtil)
+    }
+    for (var q = 0; q < n * n; q++) dark += mat[q];
+    var p4 = 10 * Math.floor(Math.abs(dark * 20 - n * n * 10) / (n * n));   // 10 × floor(|dark% − 50| / 5)
+    return p1 + p2 + p3 + p4;
+  }
+  /** base symbol from the generator (alphanumeric mode, smallest version for the EC level) */
+  function base(text, ecl) {
+    var qr = qrcode(0, ecl);
+    qr.addData(text, "Alphanumeric");
+    qr.make();
+    var n = qr.getModuleCount(), mat = new Uint8Array(n * n);
+    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) mat[r * n + c] = qr.isDark(r, c) ? 1 : 0;
+    var eclBits = ECL_BITS[ecl];
+    return { text: text, ecl: ecl, eclBits: eclBits, n: n, version: (n - 17) / 4, mat: mat, libMask: readMask(mat, n, eclBits) };
+  }
+  /** same payload re-masked with mask m (0–7) */
+  function remask(b, m) {
+    var n = b.n, f = functionMap(b.version), out = new Uint8Array(b.mat);
+    if (m !== b.libMask) for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) {
+      var k = r * n + c;
+      if (!f[k] && maskBit(b.libMask, r, c) !== maskBit(m, r, c)) out[k] ^= 1;
+    }
+    writeFormat(out, n, b.eclBits, m);
+    return out;
+  }
+  /** all eight variants with penalties; best = lowest penalty (first on ties, as ZXing) */
+  function variants(text, ecl) {
+    var b = base(text, ecl), mats = [], pen = [], best = 0;
+    for (var m = 0; m < 8; m++) {
+      mats.push(remask(b, m)); pen.push(penalty(mats[m], b.n));
+      if (pen[m] < pen[best]) best = m;
+    }
+    return { text: text, ecl: ecl, n: b.n, version: b.version, libMask: b.libMask, mats: mats, penalty: pen, best: best };
+  }
+  /** module count of the largest symbol among texts (alphanumeric mode); texts of equal length give equal versions */
+  function maxModules(texts, ecl) {
+    var seen = {}, n = 21;
+    for (var i = 0; i < texts.length; i++) {
+      var L = texts[i].length;
+      if (seen[L]) continue;
+      seen[L] = 1;
+      var qr = qrcode(0, ecl); qr.addData(texts[i], "Alphanumeric"); qr.make();
+      n = Math.max(n, qr.getModuleCount());
+    }
+    return n;
+  }
+  return { ECLS: ECLS, maskBit: maskBit, functionMap: functionMap, formatBits: formatBits, penalty: penalty, base: base,
+           remask: remask, variants: variants, maxModules: maxModules, readMask: readMask };
+})();
+// ---- grid page layout (v0.4.0), pure function: everything in DEVICE pixels so modules land on whole pixels ----
+var QTGrid = (function () {
+  "use strict";
+  /**
+   * @param o {W, H: drawing area in device px; dpr; msize: wanted module size in CSS px; quiet: quiet zone in modules;
+   *           N: module count of the largest symbol; total: number of chunks; labelCss: label line height in CSS px}
+   * Module size mpx = round(msize × dpr) device px (≥ 1) — an integer, so every module is exactly mpx × mpx device
+   * pixels (no resampling, no moiré). Cell = (N + 2·quiet)·mpx square + a label line UNDER the quiet zone.
+   * If even one cell does not fit, mpx is reduced (shrunk = true).
+   */
+  function layout(o) {
+    var mpx = Math.max(1, Math.round(o.msize * o.dpr)), labelH = Math.ceil(o.labelCss * o.dpr), shrunk = false;
+    var side = (o.N + 2 * o.quiet) * mpx;
+    while (mpx > 1 && (side > o.W || side + labelH > o.H)) { mpx--; side = (o.N + 2 * o.quiet) * mpx; shrunk = true; }
+    var cellH = side + labelH;
+    var cols = Math.max(1, Math.floor(o.W / side)), rows = Math.max(1, Math.floor(o.H / cellH));
+    var per = cols * rows, pages = Math.max(1, Math.ceil(o.total / per));
+    return { mpx: mpx, side: side, labelH: labelH, cellH: cellH, cols: cols, rows: rows, perPage: per, pages: pages,
+             ox: Math.max(0, Math.floor((o.W - cols * side) / 2)), oy: Math.max(0, Math.floor((o.H - rows * cellH) / 2)),
+             shrunk: shrunk };
+  }
+  /** chunk indices on page p */
+  function pageChunks(L, total, p) {
+    var out = [];
+    for (var i = p * L.perPage; i < Math.min(total, (p + 1) * L.perPage); i++) out.push(i);
+    return out;
+  }
+  return { layout: layout, pageChunks: pageChunks };
+})();
+</script>
 <script id="protocol">
 // ---- QT1 protocol (kept DOM-free so tools/test-web.js can run it under node) ----
 var QT1 = (function () {
@@ -2734,7 +2972,7 @@ if (typeof module !== "undefined") module.exports = QT1;
                acked: sched ? sched.ackedCount() : 0, good: sched ? sched.goodAcks() : 0, stale: sched ? sched.staleAcks() : 0,
                finished: sched ? sched.finished() : false, frames: frames.slice(),
                mic: mic ? { settings: mic.settings, rate: mic.rate, sensitivity: mic.listener.sensitivity } : null,
-               events: events.slice(), testMode: testMode };
+               events: events.slice(), testMode: testMode, view: gridMode ? "grid" : (sched ? "two" : ""), grid: gridSnapshot() };
     }
   };
 
@@ -2750,6 +2988,9 @@ if (typeof module !== "undefined") module.exports = QT1;
   drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
   function syncMode() { $("fpsbox").className = $("ack").checked ? "off" : ""; $("fps").disabled = $("ack").checked; }
   $("ack").addEventListener("change", syncMode); $("loop").addEventListener("change", syncMode); syncMode();
+  function syncView() { document.body.classList.toggle("vgrid", $("vgrid").checked); }
+  $("vgrid").addEventListener("change", syncView); $("vtwo").addEventListener("change", syncView); syncView();
+  $("msize").oninput = function () { $("msizev").textContent = this.value; };
 
   var version = 0;
   function drawCode(cv, text) {
@@ -2872,6 +3113,7 @@ if (typeof module !== "undefined") module.exports = QT1;
     }, Math.max(10, sched.nextDeadline(now) - now));
   }
   function onTone(tone) {
+    if (gridMode && running && grid) { gridTone(tone); return; }
     var now = performance.now();
     lampAt[tone] = now;
     if (!running || !sched || !ackMode) { logEvent(tone, running ? "(自動送り中: 無視 / loop mode)" : "(テスト / test)"); renderState(); return; }
@@ -2975,12 +3217,241 @@ if (typeof module !== "undefined") module.exports = QT1;
     render(); schedule();
   }
 
+
+  // =================== v0.4.0: 一覧表示 (grid pages) ===================
+  // All codes of the transfer are laid out page by page, as many per page as the window holds at the chosen module
+  // size. The 0.3.1 receiver accepts chunks in any order and ignores duplicates (Protocol.Assembler: BitSet by index),
+  // so the phone can read whichever codes it sees. Its ack tone only says "a chunk with i mod 4 = k was read", so a
+  // page cannot be marked as read from sound; paging is manual. Only DONE (3050 Hz) is acted upon: 「受信完了」.
+  var gridMode = false, grid = null, frameKey = "", GRID_LABEL_CSS = 14;
+  function gridSnapshot() {
+    if (!grid || !grid.L) return null;
+    var L = grid.L, shown = QTGrid.pageChunks(L, frames.length, grid.page), masks = {};
+    shown.forEach(function (i) { var c = curChoice(i); masks[i] = { mask: c.mask, ecl: c.ecl, user: !!grid.choice[i] }; });
+    return { page: grid.page, pages: L.pages, perPage: L.perPage, cols: L.cols, rows: L.rows, mpx: L.mpx, side: L.side,
+             labelH: L.labelH, ox: L.ox, oy: L.oy, shrunk: L.shrunk, N: grid.N, quiet: grid.quiet, ecl: grid.ecl,
+             dpr: grid.dpr, W: grid.W, H: grid.H, barCss: grid.barCss, msize: grid.msize, shown: shown, masks: masks, done: grid.done,
+             heard: grid.heard.slice(), drawn: grid.drawn.slice() };
+  }
+  /** cached 8-mask variants of chunk i at EC level ecl (only for the codes on screen) */
+  function symOf(i, ecl) {
+    var k = i + ":" + ecl;
+    if (!grid.cache[k]) grid.cache[k] = QRSym.variants(frames[i], ecl);
+    return grid.cache[k];
+  }
+  /** what chunk i is drawn as: user's choice, else the global EC level with the lowest-penalty mask */
+  function curChoice(i) {
+    var c = grid.choice[i];
+    if (c) return c;
+    return { ecl: grid.ecl, mask: symOf(i, grid.ecl).best };
+  }
+  function gridLayout() {
+    var dpr = window.devicePixelRatio || 1, bar = $("gridbar"), barCss = bar.offsetHeight;
+    grid.dpr = dpr; grid.barCss = barCss;
+    grid.W = Math.floor(window.innerWidth * dpr);
+    grid.H = Math.max(1, Math.floor((window.innerHeight - barCss) * dpr));
+    $("gridarea").style.height = (grid.H / dpr) + "px";
+    var first = grid.L ? grid.page * grid.L.perPage : 0;
+    grid.L = QTGrid.layout({ W: grid.W, H: grid.H, dpr: dpr, msize: grid.msize, quiet: grid.quiet, N: grid.N, total: frames.length, labelCss: GRID_LABEL_CSS });
+    grid.page = Math.min(grid.L.pages - 1, Math.floor(first / grid.L.perPage));   // keep the first visible code on screen
+  }
+  function drawSym(cv, mat, n, mpx, q) {
+    var size = (n + 2 * q) * mpx, g = cv.getContext("2d");
+    if (cv.width !== size) { cv.width = size; cv.height = size; }
+    g.fillStyle = "#fff"; g.fillRect(0, 0, size, size); g.fillStyle = "#000";
+    for (var r = 0; r < n; r++) {
+      var c = 0;
+      while (c < n) {
+        if (!mat[r * n + c]) { c++; continue; }
+        var c0 = c;
+        while (c < n && mat[r * n + c]) c++;
+        g.fillRect((c0 + q) * mpx, (r + q) * mpx, (c - c0) * mpx, mpx);   // whole device pixels only
+      }
+    }
+  }
+  /** (re)draw one code + its label in its cell; positions and sizes are whole device pixels */
+  function drawCell(i, slot) {
+    var L = grid.L, dpr = grid.dpr, col = slot % L.cols, row = Math.floor(slot / L.cols);
+    var x0 = L.ox + col * L.side, y0 = L.oy + row * L.cellH;
+    var ch = curChoice(i), v = symOf(i, ch.ecl), q = grid.quiet;
+    var mpx = Math.min(L.mpx, Math.floor(L.side / (v.n + 2 * q))) || 1;      // a user-chosen EC level may need more modules
+    var size = (v.n + 2 * q) * mpx, off = Math.floor((L.side - size) / 2);
+    var cv = grid.canvases[slot], lb = grid.labels[slot];
+    drawSym(cv, v.mats[ch.mask], v.n, mpx, q);
+    cv.style.left = (x0 + off) / dpr + "px"; cv.style.top = (y0 + off) / dpr + "px";
+    cv.style.width = size / dpr + "px"; cv.style.height = size / dpr + "px";
+    cv.dataset.chunk = i; cv.dataset.mask = ch.mask; cv.dataset.ecl = ch.ecl; cv.dataset.mpx = mpx;
+    lb.style.left = x0 / dpr + "px"; lb.style.top = (y0 + L.side) / dpr + "px";
+    lb.style.width = L.side / dpr + "px"; lb.style.height = L.labelH / dpr + "px";
+    var user = !!grid.choice[i];
+    lb.textContent = "#" + (i + 1) + "  m" + ch.mask + (user ? "*" : "") + (ch.ecl !== grid.ecl ? " " + ch.ecl : "") + (mpx < L.mpx ? " (" + mpx + "px)" : "");
+    lb.className = "glabel" + (user ? " user" : "");
+    lb.title = "チャンク #" + (i + 1) + " / マスク " + ch.mask + (user ? " (クリックで変更済み)" : " (ペナルティ最小)") + " / 誤り訂正 " + ch.ecl + " / v" + v.version;
+  }
+  function gridRender() {
+    var L = grid.L, area = $("gridarea"), shown = QTGrid.pageChunks(L, frames.length, grid.page);
+    while (grid.canvases.length < shown.length) {
+      var cv = document.createElement("canvas"), lb = document.createElement("div");
+      cv.addEventListener("click", onCodeClick); cv.addEventListener("contextmenu", onCodeClick);
+      area.appendChild(cv); area.appendChild(lb);
+      grid.canvases.push(cv); grid.labels.push(lb);
+    }
+    for (var k = 0; k < grid.canvases.length; k++) {
+      var on = k < shown.length;
+      grid.canvases[k].style.display = on ? "" : "none"; grid.labels[k].style.display = on ? "" : "none";
+      if (on) drawCell(shown[k], k);
+    }
+    // keep only this page's symbols cached (a 2 MB file has thousands of chunks)
+    var keep = {};
+    shown.forEach(function (i) { var c = curChoice(i); keep[i + ":" + c.ecl] = 1; });
+    Object.keys(grid.cache).forEach(function (key) { if (!keep[key]) delete grid.cache[key]; });
+    grid.drawn = shown;
+    testLog.push({ t: Math.round(performance.now()), page: grid.page, chunks: shown.slice() });
+    gridBar();
+    // the control bar's height can settle only after its first paint (fonts): lay out again if it changed
+    var bh = $("gridbar").getBoundingClientRect().height;
+    if (Math.abs(bh - grid.barCss) > 0.01 && !grid.relayout) { grid.relayout = true; gridLayout(); gridRender(); grid.relayout = false; }
+  }
+  function gridBar() {
+    var L = grid.L, shown = grid.drawn, last = grid.page === L.pages - 1;
+    $("gpage").textContent = (grid.page + 1) + "/" + L.pages;
+    $("gprev").disabled = grid.page === 0; $("gnext").disabled = last;
+    $("grange").textContent = shown.length ? "#" + (shown[0] + 1) + "–#" + (shown[shown.length - 1] + 1) + " / " + frames.length : "";
+    $("gmsizev").textContent = grid.msize;
+    $("ginfo").textContent = L.perPage + "枚/ページ (" + L.cols + "×" + L.rows + ")  v" + (grid.N - 17) / 4 + "-" + grid.ecl + "  " + L.mpx + " px/モジュール" +
+      (grid.dpr !== 1 ? " (×" + Math.round(grid.dpr * 100) / 100 + ")" : "") + "  ID " + frames[0].slice(4, 12);
+    // tones heard while this page is shown (a tone only identifies i mod 4, never the code itself)
+    var cls = [false, false, false, false], h = "";
+    shown.forEach(function (i) { cls[QT1.toneOf(i)] = true; });
+    if (mic) {
+      h = "🎤";
+      for (var k = 0; k < 4; k++) if (cls[k]) h += '<span class="t' + (grid.heard[k] ? " on" : "") + '" title="i mod 4 の組の確認音 / ack class">' + QT1.NAMES[k] + "</span>";
+    }
+    $("gtones").innerHTML = h;
+    var hint = "";
+    if (grid.done) hint = "✅ 受信完了 (完了音を検出) / receiver finished";
+    else if (L.shrunk) hint = "⚠ 窓が小さいため QR を " + L.mpx + " px/モジュール に縮小しました — 窓を大きくするか ⛶ 全画面に / window too small, modules shrunk";
+    else if (micProblem && $("gridmic").checked) hint = "🎤 マイクが使えないため完了音は聞けません (" + micProblem + ") — 受信アプリの表示で完了を確認してください";
+    else {
+      var heardAny = grid.heard.some(function (x) { return x; }), missing = [];
+      if (mic && heardAny) shown.forEach(function (i) { if (!grid.heard[QT1.toneOf(i)]) missing.push("#" + (i + 1)); });
+      if (missing.length) hint = "🎤 このページでまだ確認音が来ていない組: " + missing.slice(0, 12).join(" ") + (missing.length > 12 ? " …" : "") +
+        " (音の組が 1 つも聞こえない番号は未読の可能性が高い) / no ack yet for these codes' class";
+      else if (last) hint = "最終ページです。受信アプリの「欠落」に番号が残っていれば # 欄にその番号を入れて移動 (← で戻っても可)。揃うと完了音で「受信完了」を表示します / last page";
+      else hint = "読めたら → / Space で次のページ。どの順番で読んでも OK。読みにくいコードはクリックで描き直し / next page when read; click a hard-to-read code to redraw it";
+    }
+    $("ghint").textContent = hint;
+  }
+  function gridGo(p) {
+    if (!grid || !grid.L) return;
+    p = Math.max(0, Math.min(grid.L.pages - 1, p));
+    if (p === grid.page && grid.drawn.length) return;
+    grid.page = p; grid.heard = [false, false, false, false];
+    gridRender();
+  }
+  function onCodeClick(e) {
+    e.preventDefault();
+    var i = Number(this.dataset.chunk), c = curChoice(i), next;
+    if (e.shiftKey || e.type === "contextmenu" || e.button === 2) {
+      var ecl = QRSym.ECLS[(QRSym.ECLS.indexOf(c.ecl) + 1) % 4];
+      next = { ecl: ecl, mask: symOf(i, ecl).best };
+    } else next = { ecl: c.ecl, mask: (c.mask + 1) % 8 };
+    grid.choice[i] = next;
+    drawCell(i, grid.drawn.indexOf(i));
+    testLog.push({ t: Math.round(performance.now()), redraw: i, mask: next.mask, ecl: next.ecl });
+  }
+  function gridResize() {
+    if (!gridMode || !grid) return;
+    gridLayout(); gridRender();
+  }
+  window.addEventListener("resize", gridResize);
+  function gridTone(tone) {
+    var now = performance.now();
+    lampAt[tone] = now;
+    if (tone === QT1.DONE) {
+      logEvent(tone, "完了音 → 受信完了 / done");
+      if (!grid.done) {
+        grid.done = true; $("gdone").hidden = false;
+        testLog.push({ t: Math.round(now), done: true });
+        setStatus("受信完了 (完了音を検出) / receiver finished ✓");
+        if (!testMode) closeMic();
+      }
+    } else {
+      grid.heard[tone] = true;
+      logEvent(tone, "一覧表示: i mod 4 の組 " + QT1.NAMES[tone] + " (どのコードかは不明) / grid: class only");
+    }
+    gridBar();
+  }
+  async function prepareFrames() {
+    var name, isFile, data;
+    if (file) { isFile = true; name = file.name; data = new Uint8Array(await file.arrayBuffer()); }
+    else { isFile = false; name = ""; data = new TextEncoder().encode($("text").value); }
+    if (!data.length) return null;
+    // same content + chunk size as the previous run → same frames and transfer ID, so a receiver keeps its progress
+    var key = (isFile ? "F" : "T") + name + "|" + $("chunk").value + "|" + data.length + "|" + QT1.hex8(QT1.crc32(data));
+    if (key !== frameKey || !frames.length) {
+      frames = await QT1.frames(QT1.newId(), isFile, name, data, Number($("chunk").value), true);
+      frameKey = key;
+    }
+    return data;
+  }
+  async function startGrid() {
+    var data = await prepareFrames();
+    if (!data) { setStatus("送るデータがありません / nothing to send"); return; }
+    running = true; gridMode = true; ackMode = false; sched = null; micProblem = ""; testLog.length = 0;
+    var ecl = $("ecc").value;
+    grid = { page: 0, L: null, choice: {}, cache: {}, heard: [false, false, false, false], done: false, drawn: [],
+             ecl: ecl, quiet: Number($("quiet").value), msize: Number($("msize").value), N: QRSym.maxModules(frames, ecl),
+             canvases: [], labels: [] };
+    $("gridarea").innerHTML = ""; $("gdone").hidden = true;
+    $("gmsize").value = grid.msize;
+    $("start").disabled = true; $("stop").disabled = false;
+    document.body.classList.add("running", "gridding");
+    $("gridview").hidden = false;
+    setStatus("一覧表示 / grid: " + data.length.toLocaleString() + " B → " + frames.length + " QR, CRC32 " + frames[0].split(":")[4]);
+    gridLayout(); gridRender();
+    startUi();
+    if ($("gridmic").checked) {
+      try { await ensureMic(); } catch (e) { mic = null; micProblem = e.name || e.message || String(e); showMicInfo(null); }
+      if (gridMode) gridBar();
+    }
+  }
+  function stopGrid() {
+    gridMode = false;
+    $("gridview").hidden = true;
+    document.body.classList.remove("gridding");
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+  }
+  $("gprev").onclick = function () { this.blur(); gridGo(grid.page - 1); };   // blur: Space must not also "click" it
+  $("gnext").onclick = function () { this.blur(); gridGo(grid.page + 1); };
+  $("gstop").onclick = function () { stop(); };
+  $("gdoneclose").onclick = function () { $("gdone").hidden = true; };
+  $("gfull").onclick = function () {
+    var el = document.documentElement;
+    if (document.fullscreenElement) document.exitFullscreen().catch(function () {});
+    else if (el.requestFullscreen) el.requestFullscreen().catch(function () {});
+  };
+  $("gmsize").oninput = function () {
+    if (!grid) return;
+    grid.msize = Number(this.value); $("msize").value = this.value; $("msizev").textContent = this.value;
+    gridLayout(); gridRender();
+  };
+  $("gjump").addEventListener("keydown", function (e) {
+    e.stopPropagation();
+    if (e.key !== "Enter" || !grid) return;
+    var n = Number(this.value);
+    if (n >= 1 && n <= frames.length) gridGo(Math.floor((n - 1) / grid.L.perPage));
+    this.blur();
+  });
+
   async function start() {
+    if ($("vgrid").checked) return startGrid();
     var name, isFile, data;
     if (file) { isFile = true; name = file.name; data = new Uint8Array(await file.arrayBuffer()); }
     else { isFile = false; name = ""; data = new TextEncoder().encode($("text").value); }
     if (!data.length) { setStatus("送るデータがありません / nothing to send"); return; }
     frames = await QT1.frames(QT1.newId(), isFile, name, data, Number($("chunk").value), true);
+    frameKey = "";   // (two-code mode keeps its 0.3.1 behaviour: a new transfer ID per start)
     ackMode = $("ack").checked; running = true; paused = false; micProblem = "";
     loopReason = ackMode ? "" : "自動送りを選択 / chosen by you";
     lastHeard = -1; testLog.length = 0;
@@ -3001,6 +3472,7 @@ if (typeof module !== "undefined") module.exports = QT1;
   function startUi() { clearInterval(uiTimer); uiTimer = setInterval(renderState, 100); }
   function stop() {
     running = false; clearTimeout(timer);
+    if (gridMode) stopGrid();
     if (!testMode) closeMic();
     ["pause", "prev", "next", "stop"].forEach(function (b) { $(b).disabled = true; });
     $("start").disabled = false;
@@ -3036,6 +3508,16 @@ if (typeof module !== "undefined") module.exports = QT1;
   $("next").onclick = function () { step(1); };
   document.addEventListener("keydown", function (e) {
     if (!running || e.target.tagName === "TEXTAREA") return;
+    if (gridMode && grid) {
+      var k = e.key, d = 0;
+      if (k === "ArrowRight" || k === "PageDown" || (k === " " && !e.shiftKey)) d = 1;
+      else if (k === "ArrowLeft" || k === "PageUp" || (k === " " && e.shiftKey)) d = -1;
+      else if (k === "Home") { e.preventDefault(); gridGo(0); return; }
+      else if (k === "End") { e.preventDefault(); gridGo(grid.L.pages - 1); return; }
+      else if (k === "Escape" && !document.fullscreenElement) { stop(); return; }
+      if (d) { e.preventDefault(); gridGo(grid.page + d); }
+      return;
+    }
     if (e.key === " ") { e.preventDefault(); $("pause").onclick.call($("pause")); }
     if (e.key === "ArrowLeft") $("prev").onclick();
     if (e.key === "ArrowRight") $("next").onclick();

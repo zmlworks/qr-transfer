@@ -8,7 +8,8 @@
 
 ## QR Code Generator for JavaScript (qrcode-generator) 1.4.4 — MIT License
 - https://github.com/kazuhikoarase/qrcode-generator — Copyright (c) 2009 Kazuhiko Arase
-- Inlined unmodified in `web/sender.html` (also bundled as an APK asset so the phone can share it).
+- Inlined unmodified in `web/sender.html` (also bundled as an APK asset so the phone can share it). Since sender v0.4.0
+  the page re-masks the finished symbol in its own code (`QRSym`); the library itself is still unmodified.
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,6 +32,9 @@ THE SOFTWARE.
 ```
 
 "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
+
+## Gradle Wrapper — Apache License 2.0
+- `gradle/wrapper/gradle-wrapper.jar` (Gradle, https://gradle.org) — build tool, not part of the APK.
 
 ## Test-only (not distributed in the APK)
 - JUnit 4.13.2 — Eclipse Public License 1.0

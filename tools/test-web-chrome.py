@@ -48,7 +48,8 @@ def assemble(frames):
     assert "%08X" % (zlib.crc32(payload) & 0xffffffff) == crc, "CRC mismatch"
     return payload
 
-TEXT_JS = """() => { var t = "電波を使わないデータ受け渡し — v0.3.1 headless test ✓\\n";
+TEXT_JS = """() => { document.getElementById("vtwo").checked = true;   // v0.4.0: grid is the default; these tests cover 「2枚・確認音」
+  var t = "電波を使わないデータ受け渡し — v0.3.1 headless test ✓\\n";
   for (var i = 0; i < 600; i++) t += Math.random().toString(36).slice(2);
   document.getElementById("text").value = t; document.getElementById("fps").value = "6"; document.getElementById("chunk").value = "200"; return t; }"""
 
@@ -130,9 +131,9 @@ with sync_playwright() as pw:
     b = pw.chromium.launch(executable_path=CHROME, headless=True,
                            args=common + ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
     ctx, p = page_with(b, perms=["microphone"])
-    d = p.evaluate("() => ({ ack: document.getElementById('ack').checked, loop: document.getElementById('loop').checked, fps: document.getElementById('fps').disabled })")
-    assert d == {"ack": True, "loop": False, "fps": True}, d
-    print("ok - defaults: MIC-ACK selected, auto-advance (loop) off, loop speed disabled")
+    d = p.evaluate("() => ({ grid: document.getElementById('vgrid').checked, ack: document.getElementById('ack').checked, loop: document.getElementById('loop').checked, fps: document.getElementById('fps').disabled })")
+    assert d == {"grid": True, "ack": True, "loop": False, "fps": True}, d
+    print("ok - defaults: 一覧表示 (grid) selected; in 2枚・確認音: MIC-ACK selected, auto-advance (loop) off, loop speed disabled")
     p.evaluate(TEXT_JS); p.click("#start")
     p.wait_for_function("() => window.__qtSender.state().running")
     time.sleep(6)

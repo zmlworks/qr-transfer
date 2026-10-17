@@ -19,6 +19,7 @@ inj = '''<script>
 var t = "電波を使わないデータ受け渡し — Chrome headless test ✓\\n";
 for (var i = 0; i < 300; i++) t += Math.random().toString(36).slice(2);   // incompressible → several frames
 document.getElementById("text").value = t;
+document.getElementById("vtwo").checked = true;   // v0.4.0: these screenshots cover the 「2枚・確認音」 mode
 document.getElementById("two").checked = %s;
 document.getElementById("ack").checked = %s;
 document.getElementById("start").click();
@@ -40,5 +41,7 @@ page single false false;   shot single 1400,900 1
 # microphone paths (fake mic must never advance without acks, mic refused → LOOP mode, full acoustic loop with a
 # simulated receiver): Playwright, see tools/test-web-chrome.py
 PY=${PLAYWRIGHT_PYTHON:-python3}
-"$PY" tools/test-web-chrome.py "${SHOT:-$T/qr-sender-0.3.1-screenshot.png}"
+"$PY" tools/test-web-chrome.py "${SHOT:-$T/qr-sender-0.3.1-mode-screenshot.png}"
+# v0.4.0 grid pages (layout, crisp pixels, click-to-redraw, simulated receive through the app's decoder + assembler)
+"$PY" tools/test-grid-chrome.py
 echo "screenshots: $T"
